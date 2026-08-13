@@ -104,6 +104,20 @@ jobs:
           echo "KOODO_READER_RELEASE_VERSION=${VERSION_NAME}-${SHORT_HASH}" >> "$GITHUB_ENV"
           node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.version='${VERSION_NAME}-${SHORT_HASH}';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
 
+      - name: Modify package.json for Linux arm64 build
+        if: startsWith(matrix.os, 'ubuntu-24.04-arm')
+        run: |
+          jq '.build.linux.target = [
+            {
+              "target": "deb",
+              "arch": ["arm64"]
+            },
+            {
+              "target": "AppImage",
+              "arch": ["arm64"]
+            }
+          ]' package.json > package.json.tmp && mv package.json.tmp package.json
+
       - name: Run unit tests
         shell: bash
         run: |
