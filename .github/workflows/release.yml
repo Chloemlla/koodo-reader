@@ -71,6 +71,7 @@ jobs:
 
       - name: Set environment variable USE_SYSTEM_FPM
         if: startsWith(matrix.os, 'ubuntu-24.04-arm')
+        shell: bash
         run: echo "USE_SYSTEM_FPM=true" >> $GITHUB_ENV
 
       - name: Prepare for app notarization (macOS)
@@ -91,6 +92,7 @@ jobs:
           fi
 
       - name: Read app version
+        shell: bash
         run: |
           VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
           SHORT_HASH="${GITHUB_SHA::8}"
@@ -103,6 +105,7 @@ jobs:
           node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.version='${VERSION_NAME}-${SHORT_HASH}';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
 
       - name: Run unit tests
+        shell: bash
         run: |
           if find src -type f \( -name '*.test.*' -o -name '*.spec.*' \) | grep -q .; then
             yarn test --watchAll=false
@@ -112,6 +115,7 @@ jobs:
 
       - name: Prepare signing key (if available)
         id: sign-prep
+        shell: bash
         env:
           MAC_CERTS: ${{ secrets.MAC_CERTS }}
         run: |
@@ -154,9 +158,10 @@ jobs:
     name: Automatic release (main branch only)
     needs: build
     runs-on: ubuntu-22.04
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')
     steps:
       - name: Read app version
+        shell: bash
         run: |
           VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
           SHORT_HASH="${GITHUB_SHA::8}"
