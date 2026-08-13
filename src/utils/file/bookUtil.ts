@@ -419,10 +419,6 @@ class BookUtil {
     if (key.startsWith("cache")) {
       return;
     }
-    let isAuthed = await TokenService.getToken("is_authed");
-    if (isAuthed !== "yes") {
-      return;
-    }
     let service = ConfigService.getItem("defaultSyncOption");
     if (!service) {
       return;
@@ -464,10 +460,6 @@ class BookUtil {
     }
   }
   static async deleteCloudBook(key: string, format: string) {
-    let isAuthed = await TokenService.getToken("is_authed");
-    if (isAuthed !== "yes") {
-      return;
-    }
     let service = ConfigService.getItem("defaultSyncOption");
     if (!service) {
       return;

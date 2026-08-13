@@ -104,12 +104,6 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       );
       return;
     }
-    if (!this.props.isAuthed) {
-      toast(this.props.t("Please upgrade to Pro to use this feature"));
-      this.props.handleSetting(true);
-      this.props.handleSettingMode("account");
-      return;
-    }
     if (
       !isElectron &&
       driveList.find((item) => item.value === targetDrive)?.needExtension
@@ -175,7 +169,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       }
       ConfigService.setListConfig(settingDrive, "dataSourceList");
       toast.success(i18n.t("Binding successful"), { id: "adding-sync-id" });
-      if (this.props.isAuthed && !ConfigService.getItem("defaultSyncOption")) {
+      if (!ConfigService.getItem("defaultSyncOption")) {
         ConfigService.setItem("defaultSyncOption", settingDrive);
         if (ConfigService.getReaderConfig("isEnableKoodoSync") === "yes") {
           resetKoodoSync();
@@ -241,7 +235,10 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     if (!newValue) {
       return;
     }
-    if (!this.props.isAuthed) {
+    if (
+      driveList.find((item) => item.value === newValue)?.isPro &&
+      !this.props.isAuthed
+    ) {
       toast(this.props.t("Please upgrade to Pro to use this feature"));
       this.props.handleSetting(true);
       this.props.handleSettingMode("account");
@@ -471,7 +468,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
         service: this.props.settingDrive,
       });
     }
-    if (this.props.isAuthed && !ConfigService.getItem("defaultSyncOption")) {
+    if (!ConfigService.getItem("defaultSyncOption")) {
       ConfigService.setItem("defaultSyncOption", this.props.settingDrive);
       if (ConfigService.getReaderConfig("isEnableKoodoSync") === "yes") {
         resetKoodoSync();
