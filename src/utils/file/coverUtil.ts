@@ -43,8 +43,8 @@ const saveCoverQueue = new AsyncQueue();
 class CoverUtil {
   static async getCover(book: BookModel) {
     if (isElectron) {
-      var fs = window.require("fs");
-      var path = window.require("path");
+      var fs = window.electronAPI.fs;
+      var path = window.electronAPI.path;
       let directoryPath = path.join(getStorageLocation() || "", "cover");
       if (!fs.existsSync(directoryPath)) {
         return book.cover;
@@ -58,7 +58,10 @@ class CoverUtil {
       if (!fs.existsSync(imageFilePath)) {
         return book.cover;
       }
-      return imageFilePath;
+      return window.electronAPI.invoke("get-cover-url", {
+        filePath: imageFilePath,
+        storagePath: getStorageLocation(),
+      }) as Promise<string>;
     } else {
       if (ConfigService.getItem("isUseLocal") === "yes") {
         let coverList = await this.getLocalCoverList();
@@ -100,8 +103,8 @@ class CoverUtil {
       return true;
     }
     if (isElectron) {
-      var fs = window.require("fs");
-      var path = window.require("path");
+      var fs = window.electronAPI.fs;
+      var path = window.electronAPI.path;
       let directoryPath = path.join(getStorageLocation() || "", "cover");
       if (!fs.existsSync(directoryPath)) {
         return false;
@@ -127,8 +130,8 @@ class CoverUtil {
   }
   static async deleteCover(key: string) {
     if (isElectron) {
-      var fs = window.require("fs");
-      var path = window.require("path");
+      var fs = window.electronAPI.fs;
+      var path = window.electronAPI.path;
       let directoryPath = path.join(getStorageLocation() || "", "cover");
       if (!fs.existsSync(directoryPath)) {
         return;
@@ -160,8 +163,8 @@ class CoverUtil {
   static async deleteOfflineCover(key: string) {
     try {
       if (isElectron) {
-        var fs = window.require("fs");
-        var path = window.require("path");
+        var fs = window.electronAPI.fs;
+        var path = window.electronAPI.path;
         let directoryPath = path.join(getStorageLocation() || "", "cover");
         if (!fs.existsSync(directoryPath)) {
           return;
@@ -199,8 +202,8 @@ class CoverUtil {
     let base64Data = coverBase64.split("base64,")[1];
     if (!base64Data) return;
     if (isElectron) {
-      var fs = window.require("fs");
-      var path = window.require("path");
+      var fs = window.electronAPI.fs;
+      var path = window.electronAPI.path;
       let directoryPath = path.join(getStorageLocation() || "", "cover");
       if (!fs.existsSync(directoryPath)) {
         fs.mkdirSync(directoryPath, { recursive: true });
@@ -314,7 +317,7 @@ class CoverUtil {
   }
   static async downloadCover(cover: string) {
     if (isElectron) {
-      const { ipcRenderer } = window.require("electron");
+      const ipcRenderer = window.electronAPI;
       let service = ConfigService.getItem("defaultSyncOption");
       if (!service) {
         return;
@@ -357,7 +360,7 @@ class CoverUtil {
   }
   static async uploadCover(cover: string) {
     if (isElectron) {
-      const { ipcRenderer } = window.require("electron");
+      const ipcRenderer = window.electronAPI;
       let service = ConfigService.getItem("defaultSyncOption");
       if (!service) {
         return;
@@ -406,8 +409,8 @@ class CoverUtil {
   }
   static async getLocalCoverList() {
     if (isElectron) {
-      var fs = window.require("fs");
-      var path = window.require("path");
+      var fs = window.electronAPI.fs;
+      var path = window.electronAPI.path;
       let directoryPath = path.join(getStorageLocation() || "", "cover");
       if (!fs.existsSync(directoryPath)) {
         return [];
@@ -434,7 +437,7 @@ class CoverUtil {
   static async getCloudCoverList() {
     if (isElectron) {
       // for ftp, sftp etc
-      const { ipcRenderer } = window.require("electron");
+      const ipcRenderer = window.electronAPI;
       let service = ConfigService.getItem("defaultSyncOption");
       if (!service) {
         return [];
@@ -459,7 +462,7 @@ class CoverUtil {
     for (let cover of coverList) {
       if (cover.startsWith(key)) {
         if (isElectron) {
-          const { ipcRenderer } = window.require("electron");
+          const ipcRenderer = window.electronAPI;
           let service = ConfigService.getItem("defaultSyncOption");
           if (!service) {
             return;

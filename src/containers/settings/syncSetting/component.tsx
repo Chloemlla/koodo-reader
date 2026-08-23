@@ -33,7 +33,6 @@ import {
   KookitConfig,
   SyncHelper,
   SyncUtil,
-  TokenService,
 } from "../../../assets/lib/kookit-extra-browser.min";
 import {
   encryptToken,
@@ -44,6 +43,7 @@ import { updateUserConfig } from "../../../utils/request/user";
 import BookUtil from "../../../utils/file/bookUtil";
 import Book from "../../../models/Book";
 import ConfigUtil from "../../../utils/file/configUtil";
+import TokenService from "../../../utils/storage/tokenService";
 declare var window: any;
 class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
   constructor(props: SettingInfoProps) {
@@ -140,7 +140,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
           return;
         }
       } else if (settingDrive === "folder") {
-        const { ipcRenderer } = window.require("electron");
+        const ipcRenderer = window.electronAPI;
         drivePath = await ipcRenderer.invoke("select-path");
         if (!drivePath) {
           toast.error(i18n.t("Please select a folder"));
@@ -162,14 +162,17 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       SyncService.removeSyncUtil(settingDrive);
       removeCloudConfig(settingDrive);
       if (isElectron) {
-        const { ipcRenderer } = window.require("electron");
+        const ipcRenderer = window.electronAPI;
         await ipcRenderer.invoke("cloud-close", {
           service: settingDrive,
         });
       }
       ConfigService.setListConfig(settingDrive, "dataSourceList");
       toast.success(i18n.t("Binding successful"), { id: "adding-sync-id" });
-      if (!ConfigService.getItem("defaultSyncOption")) {
+      if (
+        !ConfigService.getItem("defaultSyncOption") &&
+        settingDrive !== "microsoft_exp"
+      ) {
         ConfigService.setItem("defaultSyncOption", settingDrive);
         if (ConfigService.getReaderConfig("isEnableKoodoSync") === "yes") {
           resetKoodoSync();
@@ -215,7 +218,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     SyncService.removeSyncUtil(targetDrive);
     removeCloudConfig(targetDrive);
     if (isElectron) {
-      const { ipcRenderer } = window.require("electron");
+      const ipcRenderer = window.electronAPI;
       await ipcRenderer.invoke("cloud-close", {
         service: targetDrive,
       });
@@ -463,12 +466,15 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     SyncService.removeSyncUtil(this.props.settingDrive);
     removeCloudConfig(this.props.settingDrive);
     if (isElectron) {
-      const { ipcRenderer } = window.require("electron");
+      const ipcRenderer = window.electronAPI;
       await ipcRenderer.invoke("cloud-close", {
         service: this.props.settingDrive,
       });
     }
-    if (!ConfigService.getItem("defaultSyncOption")) {
+    if (
+      !ConfigService.getItem("defaultSyncOption") &&
+      this.props.settingDrive !== "microsoft_exp"
+    ) {
       ConfigService.setItem("defaultSyncOption", this.props.settingDrive);
       if (ConfigService.getReaderConfig("isEnableKoodoSync") === "yes") {
         resetKoodoSync();
@@ -632,6 +638,9 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
             {driveList
               .filter((item) => !this.props.dataSourceList.includes(item.value))
               .filter((item) => {
+                if (item.value === "microsoft_exp") {
+                  return false;
+                }
                 if (!isElectron) {
                   return item.support.includes("browser");
                 }
@@ -640,7 +649,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
               .filter((item) => {
                 if (
                   isElectron &&
-                  process.platform !== "darwin" &&
+                  window.electronAPI?.runtime?.platform !== "darwin" &&
                   item.value === "icloud"
                 ) {
                   return false;
@@ -1014,7 +1023,7 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
               .filter((item) => {
                 if (
                   isElectron &&
-                  process.platform !== "darwin" &&
+                  window.electronAPI?.runtime?.platform !== "darwin" &&
                   item.value === "icloud"
                 ) {
                   return false;
@@ -1230,6 +1239,21 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                 }
               </Trans>
             </p>
+            <div className="setting-dialog-new-plugin">
+              <span
+                style={{ textDecoration: "underline" }}
+                onClick={() => {
+                  openExternalUrl(
+                    getWebsiteUrl() +
+                      (ConfigService.getReaderConfig("lang").startsWith("zh")
+                        ? "/zh/use-sync"
+                        : "/en/use-sync")
+                  );
+                }}
+              >
+                <Trans>How to sync library across devices</Trans>
+              </span>
+            </div>
           </>
         )}
       </>

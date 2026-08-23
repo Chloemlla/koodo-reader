@@ -12,8 +12,13 @@ const {
   protocol,
   screen,
   systemPreferences,
+  shell,
+  clipboard,
+  net,
+  session,
 } = require("electron");
 const path = require("path");
+const { pathToFileURL } = require("url");
 const isDev = require("electron-is-dev");
 const Store = require("electron-store");
 const log = require("electron-log/main");
@@ -21,8 +26,49 @@ const os = require("os");
 const { execFile } = require("child_process");
 const store = new Store();
 const fs = require("fs");
+const fsExtra = require("fs-extra");
+const nodeCrypto = require("crypto");
+const yazl = require("yazl");
+const { getVoicePlugin } = require("./src/utils/plugins/main/registry");
 const configDir = app.getPath("userData");
 const dirPath = path.join(configDir, "uploads");
+const assetProtocolFiles = new Map();
+const ASSET_PROTOCOL = "asset";
+const assetProtocolSecret = nodeCrypto.randomBytes(32);
+const COVER_MIME_TYPES = {
+  ".bmp": "image/bmp",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".webp": "image/webp",
+};
+const COVER_EXTENSIONS = new Set(Object.keys(COVER_MIME_TYPES));
+const AUDIO_MIME_TYPES = {
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".wav": "audio/wav",
+};
+const AUDIO_EXTENSIONS = new Set(Object.keys(AUDIO_MIME_TYPES));
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: ASSET_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+]);
 const packageJson = require("./package.json");
 let mainWin;
 let tray = null;
@@ -70,7 +116,31 @@ const throttle = (func, wait = RESIZE_THROTTLE_MS) => {
     }
   };
 };
+const getFingerprint = async () => {
+  // First, try to get cached fingerprint
+  let deviceUuid = store.get("fingerPrint");
+  if (deviceUuid) {
+    return deviceUuid;
+  }
 
+  // Try to get machine ID with additional error handling
+  try {
+    const { machineIdSync } = require("node-machine-id");
+    let machineId = machineIdSync();
+    if (machineId && typeof machineId === "string" && machineId.length > 0) {
+      // Cache the machine ID for future use
+      store.set("fingerPrint", machineId);
+      return machineId;
+    }
+  } catch (error) {
+    console.error("Failed to get machine ID:", error);
+  }
+
+  // Fallback: generate and cache a UUID
+  let fingerprint = uuidv4().replace(/-/g, "");
+  store.set("fingerPrint", fingerprint);
+  return fingerprint;
+};
 const extractClixmlErrors = (text) => {
   if (!text) return "";
   const matches = text.match(
@@ -686,14 +756,15 @@ let options = {
   minWidth: 300,
   minHeight: 100,
   webPreferences: {
-    webSecurity: false,
-    nodeIntegration: true,
-    contextIsolation: false,
+    webSecurity: true,
+    nodeIntegration: false,
+    contextIsolation: true,
+    preload: path.join(__dirname, "preload.js"),
     nativeWindowOpen: true,
     nodeIntegrationInSubFrames: false,
     allowRunningInsecureContent: false,
-    enableRemoteModule: true,
-    sandbox: false,
+    enableRemoteModule: false,
+    sandbox: true,
   },
 };
 const Database = require("better-sqlite3");
@@ -803,6 +874,61 @@ const applyNativeThemeSource = (appSkin) => {
   return getNativeDarkColorStatus();
 };
 applyNativeThemeSource(store.get("appSkin"));
+const buildProxyUrl = (config) => {
+  const authentication =
+    config.username || config.password
+      ? `${encodeURIComponent(config.username || "")}:${encodeURIComponent(config.password || "")}@`
+      : "";
+  const portNumber = parseInt(config.port);
+  return config.type === "socks5"
+    ? `socks5://${authentication}${config.host}:${portNumber}`
+    : `http://${authentication}${config.host}:${portNumber}`;
+};
+const applyProxyToSession = async () => {
+  const { session } = require("electron");
+  const http = require("http");
+  const https = require("https");
+  const config = store.get("proxyConfig");
+  const defaultSession = session.defaultSession;
+  const isEnabled =
+    config && config.type !== "none" && config.enabled !== false && config.host;
+  if (!isEnabled) {
+    await defaultSession.setProxy({ mode: "direct" });
+    https.globalAgent = new https.Agent();
+    http.globalAgent = new http.Agent();
+    return;
+  }
+  const proxyUrl = buildProxyUrl(config);
+  let agent = null;
+  try {
+    if (config.type === "socks5") {
+      const { SocksProxyAgent } = require("socks-proxy-agent");
+      agent = new SocksProxyAgent(proxyUrl);
+    } else {
+      const { HttpsProxyAgent } = require("https-proxy-agent");
+      agent = new HttpsProxyAgent(proxyUrl);
+    }
+  } catch (error) {
+    agent = null;
+  }
+  const authentication = config.username
+    ? `${encodeURIComponent(config.username)}:${encodeURIComponent(config.password || "")}@`
+    : "";
+  if (config.type === "http") {
+    const proxyAddress = `${authentication}${config.host}:${config.port}`;
+    await defaultSession.setProxy({
+      proxyRules: `http=${proxyAddress};https=${proxyAddress}`,
+    });
+  } else if (config.type === "socks5") {
+    await defaultSession.setProxy({
+      proxyRules: `socks5://${config.host}:${config.port}`,
+    });
+  }
+  if (agent) {
+    https.globalAgent = agent;
+    http.globalAgent = agent;
+  }
+};
 // Simple encryption function
 const encrypt = (text, key) => {
   let result = "";
@@ -967,13 +1093,215 @@ const createMainWin = () => {
       mainView.webContents.focus();
     }
   });
-  mainWin.webContents.on(
-    "console-message",
-    (event, level, message, line, sourceId) => {
-      console.log(`[Renderer Console] Message: ${message}`);
-    }
-  );
+  mainWin.webContents.on("console-message", (_event, level, message) => {
+    const lvl =
+      { 0: "info", 1: "info", 2: "warn", 3: "error" }[level] || "info";
+    log[lvl](`[Renderer] ${message}`);
+  });
   //cancel-download-app
+  const normalizeFileData = (value) => {
+    if (value instanceof Uint8Array) return Buffer.from(value);
+    if (value instanceof ArrayBuffer) return Buffer.from(value);
+    if (ArrayBuffer.isView(value)) {
+      return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    }
+    return value;
+  };
+  const runFileCommand = (args) => {
+    if (!args || typeof args.operation !== "string") {
+      throw new TypeError("Invalid file operation");
+    }
+    const operation = args.operation;
+    const filePath = args.path === undefined ? undefined : args.path;
+    switch (operation) {
+      case "exists":
+        return fs.existsSync(filePath);
+      case "mkdir":
+        return fs.mkdirSync(filePath, args.options || {});
+      case "read":
+        return fs.readFileSync(filePath, args.options);
+      case "write":
+        return fs.writeFileSync(
+          filePath,
+          normalizeFileData(args.data),
+          args.options
+        );
+      case "append":
+        return fs.appendFileSync(
+          filePath,
+          normalizeFileData(args.data),
+          args.options
+        );
+      case "readdir": {
+        const entries = fs.readdirSync(filePath, args.options || {});
+        return args.options && args.options.withFileTypes
+          ? entries.map((entry) => ({
+              name: entry.name,
+              isFile: entry.isFile(),
+              isDirectory: entry.isDirectory(),
+            }))
+          : entries;
+      }
+      case "stat": {
+        const stat = fs.statSync(filePath);
+        return {
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          isFile: stat.isFile(),
+          isDirectory: stat.isDirectory(),
+        };
+      }
+      case "unlink":
+        return fs.unlinkSync(filePath);
+      case "copyFile":
+        return fs.copyFileSync(args.source, args.destination);
+      case "rename":
+        return fs.renameSync(args.source, args.destination);
+      case "rm":
+        return fs.rmSync(filePath, args.options || {});
+      case "emptyDir":
+        return fsExtra.emptyDirSync(filePath);
+      case "copy":
+        return fsExtra.copy(args.source, args.destination);
+      default:
+        throw new Error(`Unsupported file operation: ${operation}`);
+    }
+  };
+  ipcMain.on("file-command-sync", (event, args) => {
+    try {
+      event.returnValue = { ok: true, value: runFileCommand(args) };
+    } catch (error) {
+      event.returnValue = {
+        ok: false,
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+          code:
+            error && typeof error.code === "string" ? error.code : undefined,
+        },
+      };
+    }
+  });
+  ipcMain.handle("file-command", async (event, args) => runFileCommand(args));
+  ipcMain.handle("get-cover-url", (event, config) => {
+    if (!config || typeof config !== "object") {
+      throw new TypeError("Invalid cover URL config");
+    }
+    return getCoverProtocolUrl(config.filePath, config.storagePath);
+  });
+  ipcMain.on("node-command-sync", (event, args) => {
+    try {
+      if (!args || typeof args.operation !== "string") {
+        throw new TypeError("Invalid Node operation");
+      }
+      const stringValue = (value) => {
+        if (typeof value !== "string") {
+          throw new TypeError("Invalid string argument");
+        }
+        return value;
+      };
+      const stringArgs = (values) => {
+        if (
+          !Array.isArray(values) ||
+          values.some((value) => typeof value !== "string")
+        ) {
+          throw new TypeError("Invalid string arguments");
+        }
+        return values;
+      };
+      let value;
+      switch (args.operation) {
+        case "path-join":
+          value = path.join(...stringArgs(args.values));
+          break;
+        case "path-dirname":
+          value = path.dirname(stringValue(args.value));
+          break;
+        case "path-basename":
+          value = path.basename(stringValue(args.value), args.suffix);
+          break;
+        case "path-extname":
+          value = path.extname(stringValue(args.value));
+          break;
+        case "path-resolve":
+          value = path.resolve(...stringArgs(args.values));
+          break;
+        case "path-posix-join":
+          value = path.posix.join(...stringArgs(args.values));
+          break;
+        case "os-homedir":
+          value = os.homedir();
+          break;
+        case "crypto-md5":
+          value = nodeCrypto
+            .createHash("md5")
+            .update(normalizeFileData(args.data))
+            .digest("hex");
+          break;
+        default:
+          throw new Error(`Unsupported Node operation: ${args.operation}`);
+      }
+      event.returnValue = { ok: true, value };
+    } catch (error) {
+      event.returnValue = {
+        ok: false,
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+          code:
+            error && typeof error.code === "string" ? error.code : undefined,
+        },
+      };
+    }
+  });
+  ipcMain.handle("open-external", (event, url) => {
+    if (typeof url !== "string" || !/^https?:|^mailto:/i.test(url)) {
+      throw new TypeError("Invalid external URL");
+    }
+    return shell.openExternal(url);
+  });
+  ipcMain.on("clipboard-read-text-sync", (event) => {
+    event.returnValue = clipboard.readText();
+  });
+  ipcMain.handle("dict-lookup", (event, args) => {
+    const filePath = args && args.filePath;
+    if (typeof (args && args.word) !== "string")
+      throw new TypeError("Invalid dictionary word");
+    const { MDX } = require("js-mdict");
+    const result = new MDX(filePath).lookup(args.word);
+    return result &&
+      result.definition !== undefined &&
+      result.definition !== null
+      ? String(result.definition)
+      : "";
+  });
+  ipcMain.handle("partial-md5", (event, filePath) => {
+    const validatedPath = filePath;
+    const hash = nodeCrypto.createHash("md5");
+    const fd = fs.openSync(validatedPath, "r");
+    try {
+      const buffer = Buffer.alloc(1024);
+      for (let i = -1; i <= 10; i++) {
+        const position = 1024 << (2 * i);
+        const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
+        if (!bytesRead) break;
+        hash.update(buffer.subarray(0, bytesRead));
+      }
+      return hash.digest("hex");
+    } finally {
+      fs.closeSync(fd);
+    }
+  });
+  ipcMain.handle("crypto-file-md5", (event, filePath) => {
+    if (typeof filePath !== "string" || !filePath) {
+      throw new TypeError("Invalid file path");
+    }
+    return new Promise((resolve, reject) => {
+      const hash = nodeCrypto.createHash("md5");
+      const stream = fs.createReadStream(filePath);
+      stream.on("error", reject);
+      stream.on("data", (chunk) => hash.update(chunk));
+      stream.on("end", () => resolve(hash.digest("hex")));
+    });
+  });
   ipcMain.handle("cancel-download-app", (event, arg) => {
     // Implement cancellation logic here
     // Note: In this example, we are not keeping a reference to the request,
@@ -1107,6 +1435,14 @@ const createMainWin = () => {
     }
     if (isAutoFullscreen === "yes" || isAutoMaximize === "yes") {
       readerWindow = new BrowserWindow(options);
+      readerWindow.webContents.on(
+        "console-message",
+        (_event, level, message) => {
+          const lvl =
+            { 0: "info", 1: "info", 2: "warn", 3: "error" }[level] || "info";
+          log[lvl](`[Renderer] ${message}`);
+        }
+      );
       readerWindow.loadURL(url);
       if (isAutoFullscreen === "yes") {
         readerWindow.setFullScreen(true);
@@ -1131,6 +1467,14 @@ const createMainWin = () => {
         hasShadow: isMergeWord === "yes" ? false : true,
         transparent: isMergeWord === "yes" ? true : false,
       });
+      readerWindow.webContents.on(
+        "console-message",
+        (_event, level, message) => {
+          const lvl =
+            { 0: "info", 1: "info", 2: "warn", 3: "error" }[level] || "info";
+          log[lvl](`[Renderer] ${message}`);
+        }
+      );
       readerWindow.loadURL(url);
       // readerWindow.webContents.openDevTools();
     }
@@ -1199,12 +1543,146 @@ const createMainWin = () => {
 
     event.returnValue = "success";
   });
+  ipcMain.handle("ai-request", async (event, payload) => {
+    const { url, method, headers, body } = payload || {};
+    const response = await net.fetch(url, {
+      method,
+      headers: headers || undefined,
+      body: method === "POST" ? body : undefined,
+    });
+    const responseText = await response.text();
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      body: responseText,
+    };
+  });
+  ipcMain.handle("ai-chat-stream", async (event, payload) => {
+    console.log("Received ai-chat-stream request:", payload);
+    const { streamId, url, headers, body } = payload || {};
+    let response;
+    try {
+      response = await net.fetch(url, {
+        method: "POST",
+        headers: headers || undefined,
+        body: body || undefined,
+      });
+    } catch (err) {
+      event.sender.send("ai-chat-error", {
+        streamId,
+        error: String(err?.message || err),
+      });
+      return { ok: false };
+    }
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      event.sender.send("ai-chat-error", {
+        streamId,
+        status: response.status,
+        statusText: response.statusText,
+        body: errorBody,
+      });
+      return { ok: false };
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let dataLines = [];
+    let finished = false;
+    const flush = () => {
+      if (dataLines.length === 0) return;
+      const data = dataLines.join("\n");
+      dataLines = [];
+      if (data === "[DONE]") {
+        finished = true;
+        return;
+      }
+      try {
+        const json = JSON.parse(data);
+        const text = json?.choices?.[0]?.delta?.content;
+        if (text) {
+          event.sender.send("ai-chat-chunk", { streamId, text });
+        }
+      } catch {
+        // 忽略无法解析的 data 行
+      }
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx).replace(/\r$/, "");
+          buffer = buffer.slice(idx + 1);
+          if (line === "") {
+            flush();
+            if (finished) break;
+          } else if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).replace(/^ /, ""));
+          }
+        }
+        if (finished) break;
+      }
+      if (!finished) flush();
+      event.sender.send("ai-chat-done", { streamId });
+    } catch (err) {
+      event.sender.send("ai-chat-error", {
+        streamId,
+        error: String(err?.message || err),
+      });
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // 忽略释放锁失败
+      }
+    }
+    return { ok: true };
+  });
   ipcMain.handle("generate-tts", async (event, voiceConfig) => {
-    let { text, speed, plugin, config } = voiceConfig;
-    let voiceFunc = plugin.script;
-    // eslint-disable-next-line no-eval
-    eval(voiceFunc);
-    return global.getAudioPath(text, speed, dirPath, config);
+    const { text, speed, pluginKey, config } = voiceConfig || {};
+    const plugin = getVoicePlugin(pluginKey);
+    if (
+      !plugin ||
+      typeof text !== "string" ||
+      typeof speed !== "number" ||
+      !Number.isFinite(speed) ||
+      !config ||
+      typeof config !== "object" ||
+      Array.isArray(config)
+    ) {
+      throw new Error("Invalid TTS plugin request");
+    }
+    const audioPath = await plugin.getAudioPath(text, speed, dirPath, config);
+    if (
+      typeof audioPath === "string" &&
+      path.isAbsolute(audioPath) &&
+      fs.existsSync(audioPath)
+    ) {
+      return getAssetProtocolUrl(audioPath, path.join(dirPath, "tts"), "audio");
+    }
+    return audioPath;
+  });
+  ipcMain.handle("get-tts-voices", async (event, request) => {
+    const { pluginKey, config } = request || {};
+    const plugin = getVoicePlugin(pluginKey);
+    if (
+      !plugin ||
+      typeof plugin.getTTSVoice !== "function" ||
+      !config ||
+      typeof config !== "object" ||
+      Array.isArray(config)
+    ) {
+      throw new Error("Invalid TTS voice request");
+    }
+    const voices = await plugin.getTTSVoice(config);
+    if (!Array.isArray(voices)) {
+      throw new Error("Invalid TTS voice list");
+    }
+    return voices;
   });
   ipcMain.handle("cloud-upload", async (event, config) => {
     let syncUtil = await getSyncUtil(config, config.isUseCache);
@@ -1285,6 +1763,11 @@ const createMainWin = () => {
   });
 
   ipcMain.handle("clear-tts", async (event, config) => {
+    for (const [token, asset] of assetProtocolFiles) {
+      if (asset.assetType === "audio") {
+        assetProtocolFiles.delete(token);
+      }
+    }
     if (!fs.existsSync(path.join(dirPath, "tts"))) {
       return "pong";
     } else {
@@ -1314,9 +1797,7 @@ const createMainWin = () => {
     return result.filePaths[0];
   });
   ipcMain.handle("encrypt-data", async (event, config) => {
-    const { TokenService } =
-      await import("./src/assets/lib/kookit-extra.min.mjs");
-    let fingerprint = await TokenService.getFingerprint();
+    let fingerprint = await getFingerprint();
     let encrypted = encrypt(config.token, fingerprint);
     store.set("encryptedToken", encrypted);
     return "pong";
@@ -1324,9 +1805,7 @@ const createMainWin = () => {
   ipcMain.handle("decrypt-data", async (event) => {
     let encrypted = store.get("encryptedToken");
     if (!encrypted) return "";
-    const { TokenService } =
-      await import("./src/assets/lib/kookit-extra.min.mjs");
-    let fingerprint = await TokenService.getFingerprint();
+    let fingerprint = await getFingerprint();
     let decrypted = decrypt(encrypted, fingerprint);
     if (decrypted.startsWith("{") && decrypted.endsWith("}")) {
       return decrypted;
@@ -1414,15 +1893,157 @@ const createMainWin = () => {
       req.end();
     });
   });
+  ipcMain.handle("get-proxy-config", async () => {
+    const config = store.get("proxyConfig") || {
+      enabled: false,
+      type: "none",
+      host: "",
+      port: 0,
+      username: "",
+      password: "",
+    };
+    return config;
+  });
+  ipcMain.handle("set-proxy-config", async (event, config) => {
+    const { enabled, type, host, port, username, password } = config || {};
+    const validTypes = ["none", "http", "socks5"];
+    if (!validTypes.includes(type)) {
+      return { ok: false, reason: "invalid_input" };
+    }
+    if (type !== "none") {
+      if (!host || typeof host !== "string" || host.includes("://")) {
+        return { ok: false, reason: "invalid_input" };
+      }
+      const portNumber = parseInt(port);
+      if (isNaN(portNumber) || portNumber < 1 || portNumber > 65535) {
+        return { ok: false, reason: "invalid_input" };
+      }
+    }
+    const finalEnabled = type === "none" ? false : !!enabled;
+    const configToStore = {
+      enabled: finalEnabled,
+      type,
+      host: type === "none" ? "" : host,
+      port: type === "none" ? 0 : parseInt(port),
+      username: type === "none" ? "" : username || "",
+      password: type === "none" ? "" : password || "",
+    };
+    store.set("proxyConfig", configToStore);
+    await applyProxyToSession();
+    return { ok: true };
+  });
+  ipcMain.handle("test-proxy-connection", async (event, config) => {
+    const https = require("https");
+    const { URL } = require("url");
+    const proxyConfig = config || {};
+    const validTypes = ["http", "socks5"];
+    if (!validTypes.includes(proxyConfig.type)) {
+      return { ok: false, reason: "invalid_input", detail: "unsupported type" };
+    }
+    if (
+      !proxyConfig.host ||
+      typeof proxyConfig.host !== "string" ||
+      proxyConfig.host.includes("://")
+    ) {
+      return { ok: false, reason: "invalid_input", detail: "invalid host" };
+    }
+    const portNumber = parseInt(proxyConfig.port);
+    if (isNaN(portNumber) || portNumber < 1 || portNumber > 65535) {
+      return { ok: false, reason: "invalid_input", detail: "invalid port" };
+    }
+    const proxyUrl = buildProxyUrl(proxyConfig);
+    let agent;
+    try {
+      if (proxyConfig.type === "socks5") {
+        const { SocksProxyAgent } = require("socks-proxy-agent");
+        agent = new SocksProxyAgent(proxyUrl);
+      } else {
+        const { HttpsProxyAgent } = require("https-proxy-agent");
+        agent = new HttpsProxyAgent(proxyUrl);
+      }
+    } catch (error) {
+      return { ok: false, reason: "agent_init_failed", detail: error.message };
+    }
+    const target = new URL("https://www.google.com/");
+    const startTime = Date.now();
+    return new Promise((resolve) => {
+      const options = {
+        hostname: target.hostname,
+        port: 443,
+        path: "/",
+        method: "HEAD",
+        timeout: 10000,
+        agent,
+        rejectUnauthorized: true,
+      };
+      const request = https.request(options, (response) => {
+        const elapsedMs = Date.now() - startTime;
+        if (response.statusCode === 407) {
+          return resolve({
+            ok: false,
+            reason: "proxy_auth_failed",
+            status: 407,
+            elapsedMs,
+            detail: `HTTP 407 Proxy Authentication Required`,
+          });
+        }
+        resolve({
+          ok:
+            response.statusCode &&
+            response.statusCode >= 200 &&
+            response.statusCode < 400,
+          status: response.statusCode,
+          elapsedMs,
+          detail: `HTTP ${response.statusCode}`,
+        });
+      });
+      request.on("timeout", () => {
+        request.destroy();
+        resolve({
+          ok: false,
+          reason: "timeout",
+          elapsedMs: Date.now() - startTime,
+          detail: `Connection to ${target.hostname} timed out after 10s`,
+        });
+      });
+      request.on("error", (error) => {
+        let reason = "unknown";
+        if (error.code === "ENOTFOUND") {
+          reason = "dns_failed";
+        } else if (error.code === "ECONNREFUSED") {
+          reason = "connection_refused";
+        } else if (error.code === "ECONNRESET") {
+          reason = "connection_reset";
+        } else if (error.code === "ETIMEDOUT") {
+          reason = "timeout";
+        } else if (error.code === "EPROTO") {
+          reason = "ssl_error";
+        } else if (
+          error.code === "CERT_HAS_EXPIRED" ||
+          error.code === "ERR_TLS_CERT_ALTNAME_INVALID" ||
+          error.code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE"
+        ) {
+          reason = "ssl_error";
+        } else if (error.message && error.message.includes("SSL")) {
+          reason = "ssl_error";
+        }
+        resolve({
+          ok: false,
+          reason,
+          code: error.code || "",
+          elapsedMs: Date.now() - startTime,
+          detail: error.message,
+        });
+      });
+      request.end();
+    });
+  });
   ipcMain.handle("get-mac", async (event, config) => {
     const { machineIdSync } = require("node-machine-id");
     return machineIdSync();
   });
   ipcMain.handle("get-device-name", async () => {
     return os.hostname() || "";
-  });
-  ipcMain.handle("get-store-value", async (event, config) => {
-    return store.get(config.key);
   });
   ipcMain.handle("get-biometric-capability", async () => {
     return await getBiometricCapability();
@@ -1565,6 +2186,161 @@ const createMainWin = () => {
     }
     db.close();
   });
+  // 流式打包备份：遍历 dataPath 下的固定目录与配置文件，
+  // 用 yazl 逐文件 addFile 直接写入目标 zip，避免将整库读入内存。
+  ipcMain.handle("backup-path", async (event, config) => {
+    if (!config || typeof config !== "object") {
+      throw new TypeError("Invalid backup config");
+    }
+    const { targetPath, fileName, dataPath, dirs, files } = config;
+    if (
+      [targetPath, dataPath].some((v) => typeof v !== "string" || !v) ||
+      typeof fileName !== "string" ||
+      !fileName ||
+      !Array.isArray(dirs) ||
+      !Array.isArray(files)
+    ) {
+      throw new TypeError("Invalid backup arguments");
+    }
+    const sendProgress = (percent) => {
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send("backup-progress", { percent });
+      }
+    };
+    // 校验 dirs/files 路径均位于 dataPath 之内，防止路径穿越
+    const base = path.resolve(dataPath);
+    const assertInside = (p) => {
+      const resolved = path.resolve(p);
+      const rel = path.relative(base, resolved);
+      if (
+        rel.startsWith(".." + path.sep) ||
+        path.isAbsolute(rel) ||
+        rel.split(path.sep).includes("..")
+      ) {
+        throw new Error("Backup source path is outside the data directory");
+      }
+      return resolved;
+    };
+    try {
+      if (!fs.existsSync(targetPath)) {
+        fs.mkdirSync(targetPath, { recursive: true });
+      }
+      const destinationPath = path.join(targetPath, fileName);
+      const tempPath = destinationPath + ".tmp";
+      await new Promise((resolve, reject) => {
+        const zip = new yazl.ZipFile();
+        zip.level = 6;
+        const output = fs.createWriteStream(tempPath);
+        let totalBytes = 0;
+        let writtenBytes = 0;
+        // 条目源文件由 yazl 内部以 createReadStream 读取，读写出错时 yazl 虽会
+        // 触发 emit("error")，但 outputStream 的 "end" 不再走到，导致 promise
+        // 永久悬挂、进度 toast 卡死。统一收集错误：完成后销毁输出流再 reject，
+        // 主进程 catch 会清理 .tmp 并向渲染进程返回失败。
+        const errored = (err) => {
+          try {
+            output.destroy();
+          } catch (_) {}
+          reject(err);
+        };
+        output.on("error", errored);
+        zip.outputStream.on("error", errored);
+        zip.on("error", errored);
+        const finish = () => {
+          output.end();
+        };
+        output.on("close", resolve);
+        // 列出所有待打包的源文件并累计总字节数（用于进度估算）
+        const entries = [];
+        const collect = (zipDir, sourceDir) => {
+          let direntNames;
+          try {
+            direntNames = fs.readdirSync(sourceDir, { withFileTypes: true });
+          } catch (_) {
+            return;
+          }
+          if (direntNames.length === 0) return;
+          for (const entry of direntNames) {
+            const sourcePath = path.join(sourceDir, entry.name);
+            const entryZip = path.posix.join(zipDir, entry.name);
+            if (entry.isDirectory()) {
+              collect(entryZip, sourcePath);
+            } else if (entry.isFile()) {
+              try {
+                totalBytes += fs.statSync(sourcePath).size;
+              } catch (_) {}
+              entries.push({ sourcePath, entryZip });
+            }
+          }
+        };
+        for (const dir of dirs) {
+          const sourceDir = assertInside(path.join(dataPath, dir));
+          if (fs.existsSync(sourceDir)) {
+            zip.addEmptyDirectory(dir);
+            collect(dir, sourceDir);
+          }
+        }
+        for (const filePath of files) {
+          const sourcePath = assertInside(
+            path.resolve(dataPath, filePath.replace(/^[/\\]/, ""))
+          );
+          if (fs.existsSync(sourcePath)) {
+            try {
+              totalBytes += fs.statSync(sourcePath).size;
+            } catch (_) {}
+            entries.push({
+              sourcePath,
+              entryZip: path.posix.normalize(filePath.replace(/^[/\\]/, "")),
+            });
+          }
+        }
+        for (const entry of entries) {
+          zip.addFile(entry.sourcePath, entry.entryZip);
+        }
+        zip.end();
+        zip.outputStream.on("data", (chunk) => {
+          writtenBytes += chunk.length;
+        });
+        zip.outputStream.on("end", () => {
+          finish();
+        });
+        // 进度估算：zip.outputStream 无内建进度，按“已写入条目的源字节”
+        // 与总字节数的比例上报（压缩前后差异不影响 UI 展示）
+        zip.outputStream.pipe(output);
+        const report = setInterval(() => {
+          const percent = totalBytes
+            ? Math.min(100, Math.round((writtenBytes / totalBytes) * 100))
+            : 100;
+          sendProgress(percent);
+        }, 100);
+        zip.outputStream.on("end", () => {
+          clearInterval(report);
+        });
+      });
+      let tempStat;
+      try {
+        tempStat = fs.statSync(tempPath);
+      } catch (_) {
+        throw new Error("Backup output file was not created");
+      }
+      if (fs.existsSync(destinationPath)) {
+        fs.unlinkSync(destinationPath);
+      }
+      fs.renameSync(tempPath, destinationPath);
+      sendProgress(100);
+      return { ok: true, size: tempStat.size };
+    } catch (error) {
+      try {
+        const tempPath = path.join(targetPath, fileName) + ".tmp";
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+      } catch (_) {}
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("backup-path failed:", message);
+      return { ok: false, error: message };
+    }
+  });
   ipcMain.handle("set-always-on-top", async (event, config) => {
     store.set("isAlwaysOnTop", config.isAlwaysOnTop);
     if (mainWin && !mainWin.isDestroyed()) {
@@ -1696,7 +2472,7 @@ const createMainWin = () => {
           ...options.webPreferences,
           nodeIntegration: false,
           contextIsolation: true,
-          preload: path.join(__dirname, "preload.js"),
+          preload: path.join(__dirname, "chat-preload.js"),
         },
       });
       chatWindow.loadURL(config.url);
@@ -1724,6 +2500,11 @@ const createMainWin = () => {
       let { width, height } = mainWin.getContentBounds();
       mainView.setBounds({ x: 0, y: 0, width: width, height: height });
       mainView.webContents.loadURL(config.url);
+      mainView.webContents.on("console-message", (_event, level, message) => {
+        const lvl =
+          { 0: "info", 1: "info", 2: "warn", 3: "error" }[level] || "info";
+        log[lvl](`[Renderer] ${message}`);
+      });
     }
   });
   ipcMain.handle("reload-tab", (event, config) => {
@@ -1852,7 +2633,14 @@ const createMainWin = () => {
       if (store.get("isAlwaysOnTop") === "yes") {
         readerWindow.setAlwaysOnTop(true);
       }
-
+      readerWindow.webContents.on(
+        "console-message",
+        (_event, level, message) => {
+          const lvl =
+            { 0: "info", 1: "info", 2: "warn", 3: "error" }[level] || "info";
+          log[lvl](`[Renderer] ${message}`);
+        }
+      );
       readerWindow.loadURL(store.get("url"));
       readerWindowReadyToClose = false;
       readerWindow.on("close", (event) => {
@@ -1938,9 +2726,6 @@ const createMainWin = () => {
   ipcMain.handle("set-native-theme-source", (event, appSkin) => {
     return applyNativeThemeSource(appSkin);
   });
-  ipcMain.on("check-main-open", (event, arg) => {
-    event.returnValue = mainWin ? true : false;
-  });
   ipcMain.on("get-file-data", function (event) {
     if (fs.existsSync(path.join(dirPath, "log.json"))) {
       try {
@@ -2012,7 +2797,162 @@ const createMainWin = () => {
   });
 };
 
-app.on("ready", () => {
+const registerAssetProtocol = () => {
+  protocol.handle(ASSET_PROTOCOL, async (request) => {
+    const requestUrl = new URL(request.url);
+    if (requestUrl.hostname !== "local") {
+      return new Response(null, { status: 404 });
+    }
+    const token = requestUrl.pathname.slice(1);
+    const asset = assetProtocolFiles.get(token);
+    if (!asset) {
+      return new Response(null, { status: 404 });
+    }
+    let filePath;
+    try {
+      filePath = fs.realpathSync(asset.filePath);
+      const allowedDirectory = fs.realpathSync(asset.allowedDirectory);
+      const relativePath = path.relative(allowedDirectory, filePath);
+      if (
+        !relativePath ||
+        relativePath.startsWith(".." + path.sep) ||
+        path.isAbsolute(relativePath) ||
+        path.extname(filePath).toLowerCase() !== asset.extension
+      ) {
+        return new Response(null, { status: 403 });
+      }
+    } catch {
+      return new Response(null, { status: 404 });
+    }
+    const response = await net.fetch(pathToFileURL(filePath).toString());
+    const headers = new Headers(response.headers);
+    headers.set("Content-Type", asset.contentType);
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("X-Content-Type-Options", "nosniff");
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  });
+};
+
+const getAssetProtocolUrl = (value, allowedDirectoryValue, assetType) => {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.includes("\0") ||
+    typeof allowedDirectoryValue !== "string" ||
+    !allowedDirectoryValue ||
+    allowedDirectoryValue.includes("\0")
+  ) {
+    throw new TypeError("Invalid asset path");
+  }
+  const mimeTypes = assetType === "audio" ? AUDIO_MIME_TYPES : COVER_MIME_TYPES;
+  const extensions =
+    assetType === "audio" ? AUDIO_EXTENSIONS : COVER_EXTENSIONS;
+  const filePath = path.resolve(value);
+  const allowedDirectory = path.resolve(allowedDirectoryValue);
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile()) {
+    throw new Error("Asset file does not exist");
+  }
+  if (!fs.existsSync(allowedDirectory)) {
+    throw new Error("Asset directory does not exist");
+  }
+  const realFilePath = fs.realpathSync(filePath);
+  const realAllowedDirectory = fs.realpathSync(allowedDirectory);
+  const relativePath = path.relative(realAllowedDirectory, realFilePath);
+  const extension = path.extname(realFilePath).toLowerCase();
+  if (
+    !relativePath ||
+    relativePath.startsWith(".." + path.sep) ||
+    path.isAbsolute(relativePath) ||
+    !extensions.has(extension)
+  ) {
+    throw new Error("Asset path is outside the allowed directory");
+  }
+  const token = nodeCrypto
+    .createHmac("sha256", assetProtocolSecret)
+    .update(`${realFilePath}\0${stat.mtimeMs}\0${stat.size}`)
+    .digest("hex");
+  const assetToken = `${token}${extension}`;
+  assetProtocolFiles.set(assetToken, {
+    filePath: realFilePath,
+    allowedDirectory: realAllowedDirectory,
+    extension,
+    contentType: mimeTypes[extension],
+    assetType,
+  });
+  return `${ASSET_PROTOCOL}://local/${assetToken}`;
+};
+
+const getCoverProtocolUrl = (value, storagePath) => {
+  if (
+    typeof storagePath !== "string" ||
+    !storagePath ||
+    storagePath.includes("\0")
+  ) {
+    throw new TypeError("Invalid cover path");
+  }
+  return getAssetProtocolUrl(
+    value,
+    path.resolve(storagePath, "cover"),
+    "cover"
+  );
+};
+
+const applyCorsToRendererRequests = () => {
+  const filter = {
+    urls: ["http://*/*", "https://*/*"],
+  };
+  session.defaultSession.webRequest.onHeadersReceived(
+    filter,
+    (details, callback) => {
+      const responseHeaders = { ...details.responseHeaders };
+      const corsHeaders = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods":
+          "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+        "Access-Control-Allow-Headers": "*, Authorization",
+        "Access-Control-Expose-Headers": "*",
+      };
+      if (details.method === "OPTIONS") {
+        corsHeaders["Access-Control-Max-Age"] = "86400";
+      }
+      for (const [name, value] of Object.entries(corsHeaders)) {
+        for (const existingName of Object.keys(responseHeaders)) {
+          if (existingName.toLowerCase() === name.toLowerCase()) {
+            delete responseHeaders[existingName];
+          }
+        }
+        responseHeaders[name] = [value];
+      }
+      callback({ responseHeaders });
+    }
+  );
+};
+
+// 这里在请求发出前统一移除 Origin 头，按非浏览器请求处理。
+const spoofOriginForLocalDev = () => {
+  const filter = {
+    urls: ["http://*/*", "https://*/*"],
+  };
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    filter,
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders };
+      delete requestHeaders["Origin"];
+      callback({ requestHeaders });
+    }
+  );
+};
+
+app.on("ready", async () => {
+  registerAssetProtocol();
+  applyCorsToRendererRequests();
+  spoofOriginForLocalDev();
+  await applyProxyToSession();
   createMainWin();
 });
 app.on("before-quit", () => {

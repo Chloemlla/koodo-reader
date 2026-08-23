@@ -89,7 +89,7 @@ class ImportDialog extends React.Component<
     this.setState({ isWaitList: true });
     let fileInfoList = [];
     if (isElectron) {
-      const { ipcRenderer } = window.require("electron");
+      const ipcRenderer = window.electronAPI;
       let tokenConfig = await getCloudConfig(drive);
       fileInfoList = await ipcRenderer.invoke("picker-list", {
         ...tokenConfig,
@@ -136,15 +136,15 @@ class ImportDialog extends React.Component<
       return;
     }
     toast.loading(this.props.t("Downloading"), {
-      id: "offline-book",
+      id: "offline-book-import",
     });
     let destPath = "temp/" + item.path.split("/").pop();
     let file: any = null;
     if (isElectron) {
-      const fs = window.require("fs");
-      const path = window.require("path");
+      const fs = window.electronAPI.fs;
+      const path = window.electronAPI.path;
       const dataPath = getStorageLocation() || "";
-      const { ipcRenderer } = window.require("electron");
+      const ipcRenderer = window.electronAPI;
       let tokenConfig = await getCloudConfig(this.state.currentDrive);
       if (!fs.existsSync(path.join(dataPath, "temp"))) {
         fs.mkdirSync(path.join(dataPath, "temp"), {
@@ -154,7 +154,8 @@ class ImportDialog extends React.Component<
       let timer = showDownloadProgress(
         this.state.currentDrive,
         "picker",
-        item.size
+        item.size,
+        "offline-book-import"
       );
       await ipcRenderer.invoke("picker-download", {
         ...tokenConfig,
@@ -165,7 +166,7 @@ class ImportDialog extends React.Component<
         storagePath: dataPath,
       });
       clearInterval(timer);
-      toast.dismiss("offline-book");
+      toast.dismiss("offline-book-import");
       const buffer = fs.readFileSync(path.join(dataPath, destPath));
 
       let arraybuffer = new Uint8Array(buffer).buffer;
@@ -179,7 +180,8 @@ class ImportDialog extends React.Component<
       let timer = showDownloadProgress(
         this.state.currentDrive,
         "picker",
-        item.size
+        item.size,
+        "offline-book-import"
       );
       let pickerUtil = await SyncService.getPickerUtil(this.state.currentDrive);
 
@@ -187,7 +189,7 @@ class ImportDialog extends React.Component<
         item.path.substring(1)
       );
       clearInterval(timer);
-      toast.dismiss("offline-book");
+      toast.dismiss("offline-book-import");
       let blob = new Blob([arraybuffer]);
       let fileName = item.path.split("/").pop() || "file";
       file = new File([blob], fileName);
@@ -243,7 +245,7 @@ class ImportDialog extends React.Component<
       let fileInfoList: FileInfo[] = [];
 
       if (isElectron) {
-        const { ipcRenderer } = window.require("electron");
+        const ipcRenderer = window.electronAPI;
         let tokenConfig = await getCloudConfig(this.state.currentDrive);
         fileInfoList = await ipcRenderer.invoke("picker-list", {
           ...tokenConfig,
@@ -306,8 +308,8 @@ class ImportDialog extends React.Component<
           "https://dl.koodoreader.com/websites/google-picker.html?access_token=" +
             pickerUtil.remote.config.access_token
         );
-        const { ipcRenderer } = window.require("electron");
-        ipcRenderer.once("picker-finished", async (event: any, config: any) => {
+        const ipcRenderer = window.electronAPI;
+        ipcRenderer.once("picker-finished", async (config: any) => {
           if (config && config.action === "picked" && config.docs) {
             for (const file of config.docs) {
               await this.handleImportGoogleFile(file);

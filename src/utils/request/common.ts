@@ -5,16 +5,15 @@ import { SSE } from "sse.js";
 import {
   CommonTool,
   ConfigService,
-  TokenService,
 } from "../../assets/lib/kookit-extra-browser.min";
 import { getServerRegion, reloadManager } from "../common";
 import { resetReaderRequest } from "./reader";
 import { resetUserRequest } from "./user";
 import { resetThirdpartyRequest } from "./thirdparty";
 import { isElectron } from "react-device-detect";
+import TokenService from "../storage/tokenService";
 const PUBLIC_URL = "https://api.koodoreader.com";
 const CN_PUBLIC_URL = "https://api.koodoreader.cn";
-let cachedPluginList: any[] | null = null;
 export const getPublicUrl = () => {
   return getServerRegion() === "china" ? CN_PUBLIC_URL : PUBLIC_URL;
 };
@@ -23,16 +22,6 @@ export const checkDeveloperUpdate = async () => {
     getPublicUrl() + `/api/update_dev?name=${navigator.language}`
   );
   return res.data.log;
-};
-export const getPluginList = async () => {
-  if (cachedPluginList) {
-    return cachedPluginList;
-  }
-  let res = await axios.get(
-    getPublicUrl() + `/api/get_plugins?name=${navigator.language}`
-  );
-  cachedPluginList = res.data.plugins;
-  return res.data.plugins;
 };
 export const uploadFile = async (url: string, file: any) => {
   return new Promise<boolean>((resolve) => {
@@ -70,9 +59,45 @@ export const handleClearToken = async () => {
   }
   ConfigService.removeItem("defaultSyncOption");
   ConfigService.removeItem("dataSourceList");
+  ConfigService.setReaderConfig("dictService", "");
+  ConfigService.setReaderConfig("transService", "");
+  ConfigService.setReaderConfig("aiService", "");
   resetReaderRequest();
   resetUserRequest();
   resetThirdpartyRequest();
+};
+
+export const aiRequest = async (
+  url: string,
+  method: "GET" | "POST",
+  headers: Record<string, string>,
+  body?: string
+): Promise<{
+  ok: boolean;
+  status: number;
+  statusText: string;
+  body: string;
+}> => {
+  if (isElectron) {
+    return await window.electronAPI.invoke("ai-request", {
+      url,
+      method,
+      headers,
+      body,
+    });
+  }
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: method === "POST" ? body : undefined,
+  });
+  const text = await response.text();
+  return {
+    ok: response.ok,
+    status: response.status,
+    statusText: response.statusText,
+    body: text,
+  };
 };
 
 export const chatStream = async (
@@ -84,19 +109,76 @@ export const chatStream = async (
   chat: any[],
   onMessage: (result) => void
 ) => {
+  const messages = [...chat, { role: "user", content: prompt }].slice(-5);
+  const chatUrl = url + "/chat/completions";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: "Bearer " + apiKey,
+  };
+  const payload = JSON.stringify({
+    model,
+    messages,
+    stream: true,
+    ...CommonTool.getDisableThinkingParams(providerId || ""),
+  });
+
+  if (isElectron) {
+    return new Promise<{ done: boolean }>((resolve, reject) => {
+      const ipcRenderer = window.electronAPI;
+      const streamId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+      const onChunk = (data: any) => {
+        if (data && data.streamId === streamId && data.text) {
+          onMessage({ text: data.text });
+        }
+      };
+      const onDone = (data: any) => {
+        if (data && data.streamId === streamId) {
+          cleanup();
+          resolve({ done: true });
+        }
+      };
+      const onError = (data: any) => {
+        if (data && data.streamId === streamId) {
+          cleanup();
+          const errMsg =
+            data.error ||
+            (data.status ? `HTTP ${data.status}` : "Unknown error");
+          toast.error(errMsg, { id: "chat-stream-error", duration: 5000 });
+          reject(new Error(errMsg));
+        }
+      };
+      const cleanup = () => {
+        ipcRenderer.removeListener("ai-chat-chunk", onChunk);
+        ipcRenderer.removeListener("ai-chat-done", onDone);
+        ipcRenderer.removeListener("ai-chat-error", onError);
+      };
+
+      ipcRenderer.on("ai-chat-chunk", onChunk);
+      ipcRenderer.on("ai-chat-done", onDone);
+      ipcRenderer.on("ai-chat-error", onError);
+
+      ipcRenderer
+        .invoke("ai-chat-stream", {
+          streamId,
+          url: chatUrl,
+          headers,
+          body: payload,
+        })
+        .catch((err: any) => {
+          cleanup();
+          reject(err);
+        });
+    });
+  }
+
   return new Promise<{ done: boolean }>((resolve, reject) => {
-    const messages = [...chat, { role: "user", content: prompt }].slice(-5);
-    const source = new SSE(url + "/chat/completions", {
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + apiKey,
-      },
-      payload: JSON.stringify({
-        model,
-        messages,
-        stream: true,
-        ...CommonTool.getDisableThinkingParams(providerId || ""),
-      }),
+    const source = new SSE(chatUrl, {
+      headers,
+      payload,
       method: "POST",
     });
 
@@ -151,7 +233,7 @@ export const parseWithSystemOCR = async (imageBase64: string) => {
   if (!isElectron) {
     return;
   }
-  const { ipcRenderer } = window.require("electron");
+  const ipcRenderer = window.electronAPI;
   let result = await ipcRenderer.invoke("system-ocr", {
     base64: imageBase64,
     lang: "auto",
