@@ -51,7 +51,9 @@ export const restoreFromBrowser = async (): Promise<Boolean> => {
         resolve(false);
         return;
       }
-      toast.loading(i18n.t("Restoring..."), { id: "backup" });
+      toast.loading(i18n.t("Restoring..."), {
+        id: "backup",
+      });
       await new Promise((r) => setTimeout(r, 100));
       try {
         const fileBuffer = await file.arrayBuffer();
@@ -106,10 +108,7 @@ export const restoreFromBrowser = async (): Promise<Boolean> => {
               const cloudRecords = await sqlUtil.dbBufferToJson(buf, dbName);
               const localRecords = await DatabaseService.getAllRecords(dbName);
               const mergedRecords = mergeRecords(localRecords, cloudRecords);
-              await DatabaseService.saveAllRecords(
-                mergedRecords,
-                dbName
-              );
+              await DatabaseService.saveAllRecords(mergedRecords, dbName);
             }
             updateProgress();
           } catch {
@@ -231,7 +230,7 @@ export const restoreFromSnapshot = async (fileName: string) => {
     const dataPath = getStorageLocation() || "";
     const filePath = path.join(dataPath, "snapshot", fileName);
     if (!fs.existsSync(filePath)) return false;
-    const zip = await JSZip.loadAsync(fs.readFileSync(filePath));
+    const admZip = window.electronAPI.admZip;
     const databaseList = CommonTool.databaseList;
     for (let i = 0; i < databaseList.length; i++) {
       await window.electronAPI.invoke("close-database", {
@@ -239,17 +238,21 @@ export const restoreFromSnapshot = async (fileName: string) => {
         storagePath: getStorageLocation(),
       });
       const entryName = "config/" + databaseList[i] + ".db";
-      const entry = zip.file(entryName);
-      if (!entry) continue;
-      const destination = path.join(dataPath, "config", databaseList[i] + ".db");
+      const data = await admZip.read(filePath, entryName);
+      if (!data) continue;
+      const destination = path.join(
+        dataPath,
+        "config",
+        databaseList[i] + ".db"
+      );
       if (fs.existsSync(destination)) fs.unlinkSync(destination);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.writeFileSync(destination, await entry.async("uint8array"));
+      fs.writeFileSync(destination, data);
     }
-    const configEntry = zip.file("config/config.json");
-    if (configEntry) {
+    const configData = await admZip.read(filePath, "config/config.json");
+    if (configData) {
       try {
-        const config = JSON.parse(await configEntry.async("string"));
+        const config = JSON.parse(new TextDecoder().decode(configData));
         for (const key in config) ConfigService.setItem(key, config[key]);
       } catch (error) {
         console.error("restore config error:", error);
@@ -269,38 +272,63 @@ export const restoreFromfilePath = async (filePath: string) => {
   const fs = window.electronAPI.fs;
   const path = window.electronAPI.path;
   if (!fs.existsSync(filePath)) return false;
-  const zip = await JSZip.loadAsync(fs.readFileSync(filePath));
-  const isNewBackup = zip.file("config/config.json") !== null;
-  if (!isNewBackup) {
-    const oldEntries = Object.keys(zip.files)
-      .filter((name) => !zip.files[name].dir)
-      .map((name) => ({
+  const dataPath = getStorageLocation() || "";
+  const ipcRenderer = window.electronAPI;
+
+  const progressListener = (payload: { percent: number }) => {
+    toast.loading(i18n.t("Restoring...") + ` (${payload.percent}%)`, {
+      id: "backup",
+    });
+  };
+  ipcRenderer.on("restore-progress", progressListener);
+  let result: any;
+  try {
+    result = await ipcRenderer.invoke("restore-path", {
+      filePath,
+      dataPath,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    toast.error(errorMessage, { id: "backup" });
+    return false;
+  } finally {
+    ipcRenderer.removeListener("restore-progress", progressListener);
+  }
+  console.info(
+    "restoreFromfilePath result:",
+    result,
+    !result || result.ok !== true,
+    result && result.isNewBackup === false
+  );
+
+  if (!result || result.ok !== true) {
+    if (result && result.isNewBackup === false) {
+      console.warn(
+        "Old backup format detected, falling back to AdmZip restoration."
+      );
+      // 旧备份格式：主进程不流式处理，回退到 adm-zip（遗留兼容路径）
+      const admZip = window.electronAPI.admZip;
+      const oldNames = await admZip.list(filePath);
+      const oldEntries = oldNames.map((name: string) => ({
         name,
-        getData: () => zip.files[name].async("uint8array"),
+        getData: async () => (await admZip.read(filePath, name))!,
       }));
-    return await restoreFromOldBackup(oldEntries);
+      return await restoreFromOldBackup(oldEntries);
+    }
+    const message = (result && result.error) || "Restore failed";
+    toast.error(message, { id: "backup" });
+    return false;
   }
 
-  const dataPath = getStorageLocation() || "";
+  // 主进程已流式写盘资产文件，并回传 config 类文件 Buffer，在此处理。
+  const configFiles: { name: string; buffer: ArrayBuffer }[] =
+    result.configFiles || [];
   let failed = false;
-  let processedCount = 0;
-  const allFiles = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
-  const totalFiles = allFiles.length;
-  const updateProgress = () => {
-    processedCount++;
-    const percent = Math.round((processedCount / Math.max(totalFiles, 1)) * 100);
-    toast.loading(i18n.t("Restoring...") + ` (${percent}%)`, { id: "backup" });
-  };
-
-  const configFiles = Object.keys(zip.files).filter(
-    (name) => name.startsWith("config/") && !zip.files[name].dir
-  );
-  for (const fileName of configFiles) {
+  for (const file of configFiles) {
     try {
-      const entryName = path.basename(fileName);
-      const entry = zip.file(fileName)!;
+      const entryName = path.basename(file.name);
       if (entryName === "config.json") {
-        const text = await entry.async("string");
+        const text = new TextDecoder().decode(file.buffer);
         if (!text) {
           failed = true;
           break;
@@ -308,47 +336,21 @@ export const restoreFromfilePath = async (filePath: string) => {
         const config = JSON.parse(text);
         for (const key in config) ConfigService.setItem(key, config[key]);
       } else if (entryName === "sync.json") {
-        const text = await entry.async("string");
+        const text = new TextDecoder().decode(file.buffer);
         if (!text) {
           failed = true;
           break;
         }
         ConfigService.setItem("syncRecord", text);
       } else if (entryName.endsWith(".db")) {
-        const buf = await entry.async("arraybuffer");
         const sqlUtil = new SqlUtil();
         const dbName = entryName.split(".")[0];
-        const cloudRecords = await sqlUtil.dbBufferToJson(buf, dbName);
-        await DatabaseService.saveAllRecords(
-          cloudRecords,
-          dbName
-        );
+        const cloudRecords = await sqlUtil.dbBufferToJson(file.buffer, dbName);
+        await DatabaseService.saveAllRecords(cloudRecords, dbName);
       }
-      updateProgress();
     } catch {
       failed = true;
       break;
-    }
-  }
-  if (failed) return false;
-
-  const isSafeArchiveName = (name: string) =>
-    !name.startsWith("/") && !name.split(/[\\/]/).includes("..");
-  const assetFiles = Object.keys(zip.files).filter(
-    (name) =>
-      isSafeArchiveName(name) &&
-      !zip.files[name].dir &&
-      ["book/", "cover/", "dict/", "background/", "font/", "snapshot/"].some((prefix) => name.startsWith(prefix))
-  );
-  for (const name of assetFiles) {
-    try {
-      const destination = path.join(dataPath, name);
-      const directory = path.dirname(destination);
-      if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
-      fs.writeFileSync(destination, await zip.file(name)!.async("uint8array"));
-      updateProgress();
-    } catch {
-      failed = true;
     }
   }
   return !failed;

@@ -9,7 +9,6 @@ const {
   dialog,
   powerSaveBlocker,
   nativeTheme: electronNativeTheme,
-  protocol,
   screen,
   systemPreferences,
   shell,
@@ -29,46 +28,11 @@ const fs = require("fs");
 const fsExtra = require("fs-extra");
 const nodeCrypto = require("crypto");
 const yazl = require("yazl");
+const yauzl = require("yauzl");
+const AdmZip = require("adm-zip");
 const { getVoicePlugin } = require("./src/utils/plugins/main/registry");
 const configDir = app.getPath("userData");
 const dirPath = path.join(configDir, "uploads");
-const assetProtocolFiles = new Map();
-const ASSET_PROTOCOL = "asset";
-const assetProtocolSecret = nodeCrypto.randomBytes(32);
-const COVER_MIME_TYPES = {
-  ".bmp": "image/bmp",
-  ".gif": "image/gif",
-  ".ico": "image/x-icon",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".tif": "image/tiff",
-  ".tiff": "image/tiff",
-  ".webp": "image/webp",
-};
-const COVER_EXTENSIONS = new Set(Object.keys(COVER_MIME_TYPES));
-const AUDIO_MIME_TYPES = {
-  ".aac": "audio/aac",
-  ".flac": "audio/flac",
-  ".m4a": "audio/mp4",
-  ".mp3": "audio/mpeg",
-  ".ogg": "audio/ogg",
-  ".opus": "audio/ogg",
-  ".wav": "audio/wav",
-};
-const AUDIO_EXTENSIONS = new Set(Object.keys(AUDIO_MIME_TYPES));
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: ASSET_PROTOCOL,
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-    },
-  },
-]);
 const packageJson = require("./package.json");
 let mainWin;
 let tray = null;
@@ -756,7 +720,7 @@ let options = {
   minWidth: 300,
   minHeight: 100,
   webPreferences: {
-    webSecurity: true,
+    webSecurity: !isDev,
     nodeIntegration: false,
     contextIsolation: true,
     preload: path.join(__dirname, "preload.js"),
@@ -1182,11 +1146,52 @@ const createMainWin = () => {
     }
   });
   ipcMain.handle("file-command", async (event, args) => runFileCommand(args));
-  ipcMain.handle("get-cover-url", (event, config) => {
-    if (!config || typeof config !== "object") {
-      throw new TypeError("Invalid cover URL config");
+  // adm-zip：snapshot 生成/还原与旧备份格式回退使用（与备份主流程的
+  // yazl/yauzl 流式处理并存；此处处理的均为配置类小文件，同步解压即可）。
+  ipcMain.handle("zip-command", async (event, args) => {
+    if (!args || typeof args.operation !== "string") {
+      throw new TypeError("Invalid zip operation");
     }
-    return getCoverProtocolUrl(config.filePath, config.storagePath);
+    const stringValue = (value, key) => {
+      if (typeof value !== "string" || !value) {
+        throw new TypeError(`${key} must be a non-empty string`);
+      }
+      return value;
+    };
+    switch (args.operation) {
+      case "list": {
+        const filePath = stringValue(args.filePath, "filePath");
+        return new AdmZip(filePath)
+          .getEntries()
+          .filter((entry) => !entry.isDirectory)
+          .map((entry) => entry.entryName);
+      }
+      case "read": {
+        const filePath = stringValue(args.filePath, "filePath");
+        const entryName = stringValue(args.entryName, "entryName");
+        const entry = new AdmZip(filePath)
+          .getEntries()
+          .find((e) => e.entryName === entryName);
+        return entry && !entry.isDirectory ? entry.getData() : null;
+      }
+      case "create": {
+        const outputPath = stringValue(args.outputPath, "outputPath");
+        if (!Array.isArray(args.entries)) {
+          throw new TypeError("entries must be an array");
+        }
+        const zip = new AdmZip();
+        for (const entry of args.entries) {
+          if (!entry || typeof entry.name !== "string") {
+            throw new TypeError("Invalid zip entry");
+          }
+          zip.addFile(entry.name, Buffer.from(normalizeFileData(entry.data)));
+        }
+        zip.writeZip(outputPath);
+        return true;
+      }
+      default:
+        throw new Error(`Unsupported zip operation: ${args.operation}`);
+    }
   });
   ipcMain.on("node-command-sync", (event, args) => {
     try {
@@ -1661,7 +1666,7 @@ const createMainWin = () => {
       path.isAbsolute(audioPath) &&
       fs.existsSync(audioPath)
     ) {
-      return getAssetProtocolUrl(audioPath, path.join(dirPath, "tts"), "audio");
+      return pathToFileURL(audioPath).toString();
     }
     return audioPath;
   });
@@ -1762,11 +1767,6 @@ const createMainWin = () => {
   });
 
   ipcMain.handle("clear-tts", async (event, config) => {
-    for (const [token, asset] of assetProtocolFiles) {
-      if (asset.assetType === "audio") {
-        assetProtocolFiles.delete(token);
-      }
-    }
     if (!fs.existsSync(path.join(dirPath, "tts"))) {
       return "pong";
     } else {
@@ -2340,6 +2340,219 @@ const createMainWin = () => {
       return { ok: false, error: message };
     }
   });
+  // 流式解压恢复：用 yauzl 逐条目 openReadStream，避免把整个 zip 读入内存。
+  // 资产文件（book/cover/dict/background/font/snapshot）在主进程直接流式写盘，
+  // config 类文件（config/*.db、config.json、sync.json）回传渲染进程处理：
+  // .db 经 sql.js 解析后与本地记录合并写入，json 写入 ConfigService。
+  ipcMain.handle("restore-path", async (event, config) => {
+    if (!config || typeof config !== "object") {
+      throw new TypeError("Invalid restore config");
+    }
+    const { filePath, dataPath } = config;
+    if (
+      typeof filePath !== "string" ||
+      !filePath ||
+      typeof dataPath !== "string" ||
+      !dataPath
+    ) {
+      throw new TypeError("Invalid restore arguments");
+    }
+    if (!fs.existsSync(filePath)) {
+      return { ok: false, error: "Backup file not found" };
+    }
+    const sendProgress = (percent) => {
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send("restore-progress", { percent });
+      }
+    };
+    const base = path.resolve(dataPath);
+    const assertInside = (p) => {
+      const resolved = path.resolve(p);
+      const rel = path.relative(base, resolved);
+      if (
+        rel.startsWith(".." + path.sep) ||
+        path.isAbsolute(rel) ||
+        rel.split(path.sep).includes("..")
+      ) {
+        throw new Error(
+          "Restore destination path is outside the data directory"
+        );
+      }
+      return resolved;
+    };
+    const ASSET_PREFIXES = [
+      "book/",
+      "cover/",
+      "dict/",
+      "background/",
+      "font/",
+      "snapshot/",
+    ];
+    const isConfigFile = (name) => {
+      if (!name.startsWith("config/")) return false;
+      const rest = name.slice("config/".length);
+      if (rest.includes("/")) return false;
+      return (
+        rest.endsWith(".db") || rest === "config.json" || rest === "sync.json"
+      );
+    };
+    const isAssetFile = (name) =>
+      ASSET_PREFIXES.some((prefix) => name.startsWith(prefix));
+    const isFileEntry = (entry) => !/\/$/.test(entry.fileName);
+
+    // 用 yauzl 回调式 API 遍历（其 eachEntry() 迭代器与 FdSlicer 的 ref/unref
+    // 时序存在冲突，遍历结束后 fd 会被提前关闭，故不使用 for await 形式）。
+    const scanEntries = () =>
+      new Promise((resolve, reject) => {
+        yauzl.fromFd(
+          fs.openSync(filePath, "r"),
+          { lazyEntries: true, autoClose: true },
+          (err, zf) => {
+            if (err) return reject(err);
+            let hasNewConfig = false;
+            let totalEntries = 0;
+            zf.on("entry", (entry) => {
+              if (entry.fileName === "config/config.json") hasNewConfig = true;
+              totalEntries++;
+              zf.readEntry();
+            });
+            zf.on("end", () => resolve({ hasNewConfig, totalEntries }));
+            zf.on("error", reject);
+            zf.readEntry();
+          }
+        );
+      });
+
+    let scanResult;
+    try {
+      scanResult = await scanEntries();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: message };
+    }
+    if (!scanResult.hasNewConfig) {
+      return { ok: false, isNewBackup: false };
+    }
+    const totalEntries = scanResult.totalEntries;
+
+    // 第二遍：逐条目 openReadStream 流式处理。
+    const configBuffers = [];
+    let processed = 0;
+    const processAllEntries = () =>
+      new Promise((resolve, reject) => {
+        yauzl.fromFd(
+          fs.openSync(filePath, "r"),
+          { lazyEntries: true, autoClose: true },
+          (err, zf) => {
+            if (err) return reject(err);
+            const advance = () => {
+              processed++;
+              sendProgress(
+                Math.round((processed / Math.max(totalEntries, 1)) * 100)
+              );
+              zf.readEntry();
+            };
+            zf.on("entry", (entry) => {
+              const name = entry.fileName;
+              if (!isFileEntry(entry)) {
+                // 目录条目：在主进程创建对应目录。若目标路径被一个异常空文件占住
+                // （历史残留），先删除该文件再建目录，避免后续写入 ENOENT。
+                if (isAssetFile(name) || name.startsWith("config/")) {
+                  let dirDest;
+                  try {
+                    dirDest = assertInside(
+                      path.join(dataPath, name.replace(/\/$/, ""))
+                    );
+                  } catch (e3) {
+                    return reject(e3);
+                  }
+                  try {
+                    if (
+                      fs.existsSync(dirDest) &&
+                      !fs.statSync(dirDest).isDirectory()
+                    ) {
+                      fs.unlinkSync(dirDest);
+                    }
+                    fs.mkdirSync(dirDest, { recursive: true });
+                  } catch (e3) {
+                    return reject(e3);
+                  }
+                }
+                advance();
+                return;
+              }
+              zf.openReadStream(entry, (e2, readStream) => {
+                if (e2) return reject(e2);
+                if (isAssetFile(name)) {
+                  // 流式写盘，不进内存
+                  let destination;
+                  try {
+                    destination = assertInside(path.join(dataPath, name));
+                  } catch (e3) {
+                    return reject(e3);
+                  }
+                  const directory = path.dirname(destination);
+                  try {
+                    if (
+                      fs.existsSync(directory) &&
+                      !fs.statSync(directory).isDirectory()
+                    ) {
+                      fs.unlinkSync(directory);
+                    }
+                    fs.mkdirSync(directory, { recursive: true });
+                  } catch (e3) {
+                    return reject(e3);
+                  }
+                  const output = fs.createWriteStream(destination);
+                  output.on("error", reject);
+                  readStream.on("error", reject);
+                  output.on("close", advance);
+                  readStream.pipe(output);
+                } else if (isConfigFile(name)) {
+                  // config 类文件（*.db / config.json / sync.json）累积为 Buffer
+                  // 回传渲染进程处理：.db 经 sql.js 解析合并，json 写入 ConfigService
+                  const chunks = [];
+                  readStream.on("data", (chunk) => chunks.push(chunk));
+                  readStream.on("error", reject);
+                  readStream.on("end", () => {
+                    const buf = Buffer.concat(chunks);
+                    configBuffers.push({
+                      name,
+                      buffer: buf.buffer.slice(
+                        buf.byteOffset,
+                        buf.byteOffset + buf.byteLength
+                      ),
+                    });
+                    advance();
+                  });
+                } else {
+                  readStream.resume();
+                  readStream.on("end", advance);
+                  readStream.on("error", reject);
+                }
+              });
+            });
+            zf.on("end", resolve);
+            zf.on("error", reject);
+            zf.readEntry();
+          }
+        );
+      });
+
+    try {
+      await processAllEntries();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("restore-path failed:", message);
+      return { ok: false, error: message };
+    }
+    sendProgress(100);
+    return {
+      ok: true,
+      isNewBackup: true,
+      configFiles: configBuffers,
+    };
+  });
   ipcMain.handle("set-always-on-top", async (event, config) => {
     store.set("isAlwaysOnTop", config.isAlwaysOnTop);
     if (mainWin && !mainWin.isDestroyed()) {
@@ -2796,111 +3009,6 @@ const createMainWin = () => {
   });
 };
 
-const registerAssetProtocol = () => {
-  protocol.handle(ASSET_PROTOCOL, async (request) => {
-    const requestUrl = new URL(request.url);
-    if (requestUrl.hostname !== "local") {
-      return new Response(null, { status: 404 });
-    }
-    const token = requestUrl.pathname.slice(1);
-    const asset = assetProtocolFiles.get(token);
-    if (!asset) {
-      return new Response(null, { status: 404 });
-    }
-    let filePath;
-    try {
-      filePath = fs.realpathSync(asset.filePath);
-      const allowedDirectory = fs.realpathSync(asset.allowedDirectory);
-      const relativePath = path.relative(allowedDirectory, filePath);
-      if (
-        !relativePath ||
-        relativePath.startsWith(".." + path.sep) ||
-        path.isAbsolute(relativePath) ||
-        path.extname(filePath).toLowerCase() !== asset.extension
-      ) {
-        return new Response(null, { status: 403 });
-      }
-    } catch {
-      return new Response(null, { status: 404 });
-    }
-    const response = await net.fetch(pathToFileURL(filePath).toString());
-    const headers = new Headers(response.headers);
-    headers.set("Content-Type", asset.contentType);
-    headers.set("Access-Control-Allow-Origin", "*");
-    headers.set("X-Content-Type-Options", "nosniff");
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  });
-};
-
-const getAssetProtocolUrl = (value, allowedDirectoryValue, assetType) => {
-  if (
-    typeof value !== "string" ||
-    !value ||
-    value.includes("\0") ||
-    typeof allowedDirectoryValue !== "string" ||
-    !allowedDirectoryValue ||
-    allowedDirectoryValue.includes("\0")
-  ) {
-    throw new TypeError("Invalid asset path");
-  }
-  const mimeTypes = assetType === "audio" ? AUDIO_MIME_TYPES : COVER_MIME_TYPES;
-  const extensions =
-    assetType === "audio" ? AUDIO_EXTENSIONS : COVER_EXTENSIONS;
-  const filePath = path.resolve(value);
-  const allowedDirectory = path.resolve(allowedDirectoryValue);
-  const stat = fs.statSync(filePath);
-  if (!stat.isFile()) {
-    throw new Error("Asset file does not exist");
-  }
-  if (!fs.existsSync(allowedDirectory)) {
-    throw new Error("Asset directory does not exist");
-  }
-  const realFilePath = fs.realpathSync(filePath);
-  const realAllowedDirectory = fs.realpathSync(allowedDirectory);
-  const relativePath = path.relative(realAllowedDirectory, realFilePath);
-  const extension = path.extname(realFilePath).toLowerCase();
-  if (
-    !relativePath ||
-    relativePath.startsWith(".." + path.sep) ||
-    path.isAbsolute(relativePath) ||
-    !extensions.has(extension)
-  ) {
-    throw new Error("Asset path is outside the allowed directory");
-  }
-  const token = nodeCrypto
-    .createHmac("sha256", assetProtocolSecret)
-    .update(`${realFilePath}\0${stat.mtimeMs}\0${stat.size}`)
-    .digest("hex");
-  const assetToken = `${token}${extension}`;
-  assetProtocolFiles.set(assetToken, {
-    filePath: realFilePath,
-    allowedDirectory: realAllowedDirectory,
-    extension,
-    contentType: mimeTypes[extension],
-    assetType,
-  });
-  return `${ASSET_PROTOCOL}://local/${assetToken}`;
-};
-
-const getCoverProtocolUrl = (value, storagePath) => {
-  if (
-    typeof storagePath !== "string" ||
-    !storagePath ||
-    storagePath.includes("\0")
-  ) {
-    throw new TypeError("Invalid cover path");
-  }
-  return getAssetProtocolUrl(
-    value,
-    path.resolve(storagePath, "cover"),
-    "cover"
-  );
-};
-
 const applyCorsToRendererRequests = () => {
   const filter = {
     urls: ["http://*/*", "https://*/*"],
@@ -2948,7 +3056,6 @@ const spoofOriginForLocalDev = () => {
 };
 
 app.on("ready", async () => {
-  registerAssetProtocol();
   applyCorsToRendererRequests();
   spoofOriginForLocalDev();
   await applyProxyToSession();
