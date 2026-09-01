@@ -230,7 +230,9 @@ export const restoreFromSnapshot = async (fileName: string) => {
     const dataPath = getStorageLocation() || "";
     const filePath = path.join(dataPath, "snapshot", fileName);
     if (!fs.existsSync(filePath)) return false;
-    const admZip = window.electronAPI.admZip;
+    const zip = await JSZip.loadAsync(
+      new Uint8Array(fs.readFileSync(filePath))
+    );
     const databaseList = CommonTool.databaseList;
     for (let i = 0; i < databaseList.length; i++) {
       await window.electronAPI.invoke("close-database", {
@@ -238,7 +240,8 @@ export const restoreFromSnapshot = async (fileName: string) => {
         storagePath: getStorageLocation(),
       });
       const entryName = "config/" + databaseList[i] + ".db";
-      const data = await admZip.read(filePath, entryName);
+      const entry = zip.file(entryName);
+      const data = entry ? await entry.async("uint8array") : null;
       if (!data) continue;
       const destination = path.join(
         dataPath,
@@ -249,7 +252,10 @@ export const restoreFromSnapshot = async (fileName: string) => {
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.writeFileSync(destination, data);
     }
-    const configData = await admZip.read(filePath, "config/config.json");
+    const configEntry = zip.file("config/config.json");
+    const configData = configEntry
+      ? await configEntry.async("uint8array")
+      : null;
     if (configData) {
       try {
         const config = JSON.parse(new TextDecoder().decode(configData));
@@ -304,15 +310,20 @@ export const restoreFromfilePath = async (filePath: string) => {
   if (!result || result.ok !== true) {
     if (result && result.isNewBackup === false) {
       console.warn(
-        "Old backup format detected, falling back to AdmZip restoration."
+        "Old backup format detected, falling back to JSZip restoration."
       );
-      // 旧备份格式：主进程不流式处理，回退到 adm-zip（遗留兼容路径）
-      const admZip = window.electronAPI.admZip;
-      const oldNames = await admZip.list(filePath);
-      const oldEntries = oldNames.map((name: string) => ({
-        name,
-        getData: async () => (await admZip.read(filePath, name))!,
-      }));
+      // 旧备份格式：主进程不流式处理，回退到渲染进程 JSZip 解压（遗留兼容路径）
+      const fileBuffer = fs.readFileSync(filePath);
+      const zip = await JSZip.loadAsync(new Uint8Array(fileBuffer));
+      const oldEntries = Object.keys(zip.files)
+        .filter((name) => !zip.files[name].dir)
+        .map((name) => {
+          const entryName = name.split("/").pop() || "";
+          return {
+            name: entryName,
+            getData: async () => await zip.files[name].async("arraybuffer"),
+          };
+        });
       return await restoreFromOldBackup(oldEntries);
     }
     const message = (result && result.error) || "Restore failed";
