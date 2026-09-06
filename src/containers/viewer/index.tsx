@@ -20,6 +20,7 @@ import {
   handleFetchAuthed,
   handleScale,
   handleBackgroundColor,
+  handleParagraphMode,
 } from "../../store/actions";
 import Viewer from "./component";
 import { stateType } from "../../store";
@@ -42,6 +43,8 @@ const mapStateToProps = (state: stateType) => {
     scale: state.reader.scale,
     margin: state.reader.margin,
     isHideBackground: state.reader.isHideBackground,
+    isParagraphMode: state.reader.isParagraphMode,
+    isReadingRuler: state.reader.isReadingRuler,
     renderBookFunc: state.book.renderBookFunc,
   };
 };
@@ -66,6 +69,7 @@ const actionCreator = {
   handleFetchAuthed,
   handleScale,
   handleBackgroundColor,
+  handleParagraphMode,
 };
 export default connect(
   mapStateToProps,

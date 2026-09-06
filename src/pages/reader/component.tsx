@@ -463,7 +463,8 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
               AI
             </div>
           )}
-          {this.props.currentBook.format === "PDF" &&
+          {this.props.currentBook &&
+            this.props.currentBook.format === "PDF" &&
             !ConfigService.getAllListConfig("convertPDFBooks").includes(
               this.props.currentBook.key
             ) &&

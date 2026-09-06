@@ -507,6 +507,11 @@ export const skinList = [
 
 export const readerSettingList = [
   {
+    title: "Enable paragraph mode",
+    propName: "isParagraphMode",
+    isPDF: false,
+  },
+  {
     title: "Render PDF from even page",
     propName: "isStartFromEven",
     isPDF: true,

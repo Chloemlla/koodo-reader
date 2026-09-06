@@ -39,6 +39,8 @@ const initState = {
   isHideFooter: ConfigService.getReaderConfig("isHideFooter") === "yes",
   isHideHeader: ConfigService.getReaderConfig("isHideHeader") === "yes",
   isHideBackground: ConfigService.getReaderConfig("isHideBackground") === "yes",
+  isParagraphMode: ConfigService.getReaderConfig("isParagraphMode") === "yes",
+  isReadingRuler: ConfigService.getReaderConfig("isReadingRuler") === "yes",
   isShowPageBorder: ConfigService.getReaderConfig("isShowPageBorder") === "yes",
   textOrientation: ConfigService.getReaderConfig("textOrientation") || "",
   jumpPosition: null as object | null,
@@ -150,6 +152,16 @@ export function reader(
       return {
         ...state,
         isHideBackground: action.payload,
+      };
+    case "HANDLE_PARAGRAPH_MODE":
+      return {
+        ...state,
+        isParagraphMode: action.payload,
+      };
+    case "HANDLE_READING_RULER":
+      return {
+        ...state,
+        isReadingRuler: action.payload,
       };
     case "HANDLE_SHOW_BORDER":
       return {

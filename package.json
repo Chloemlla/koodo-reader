@@ -130,6 +130,7 @@
       "src/assets/lib/kookit-extra.min.mjs",
       "src/utils/plugins/main/**/*.js",
       "main.js",
+      "src/utils/main/**/*.js",
       "preload.js",
       "chat-preload.js"
     ],
