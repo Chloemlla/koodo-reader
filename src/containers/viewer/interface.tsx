@@ -18,6 +18,10 @@ export interface ViewerProps {
   isHideBackground: boolean;
   isParagraphMode: boolean;
   isReadingRuler: boolean;
+  isSpeedReading: boolean;
+  isMergeWord: boolean;
+  isShowPageBorder: boolean;
+  textOrientation: string;
   defaultSyncOption: string;
   scale: string;
   margin: string;

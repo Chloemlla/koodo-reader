@@ -315,6 +315,10 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
         isBionic: ConfigService.getReaderConfig("isBionic"),
         isParagraphMode: ConfigService.getReaderConfig("isParagraphMode"),
         isReadingRuler: ConfigService.getReaderConfig("isReadingRuler"),
+        isSpeedReading: ConfigService.getReaderConfig("isSpeedReading"),
+        speedReadingSpeed: parseFloat(
+          ConfigService.getReaderConfig("speedReadingSpeed") || "300"
+        ),
         readingRulerLineHeight: parseFloat(
           ConfigService.getReaderConfig("readingRulerLineHeight") || "3"
         ),
@@ -748,8 +752,12 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
         ></div>
         <PageWidget />
         {this.props.isHideBackground ||
+        this.props.textOrientation === "vertical" ||
+        this.props.isShowPageBorder ||
         this.props.isParagraphMode ||
-        this.props.isReadingRuler ? null : this.props.currentBook.key ? (
+        this.props.isReadingRuler ||
+        this.props.isSpeedReading ||
+        this.props.isMergeWord ? null : this.props.currentBook.key ? (
           <Background />
         ) : null}
       </>

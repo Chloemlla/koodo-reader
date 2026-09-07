@@ -107,6 +107,12 @@ export function handleParagraphMode(isParagraphMode: boolean) {
 export function handleReadingRuler(isReadingRuler: boolean) {
   return { type: "HANDLE_READING_RULER", payload: isReadingRuler };
 }
+export function handleSpeedReading(isSpeedReading: boolean) {
+  return { type: "HANDLE_SPEED_READING", payload: isSpeedReading };
+}
+export function handleMergeWord(isMergeWord: boolean) {
+  return { type: "HANDLE_MERGE_WORD", payload: isMergeWord };
+}
 export function handleShowBorder(isShowPageBorder: boolean) {
   return { type: "HANDLE_SHOW_BORDER", payload: isShowPageBorder };
 }

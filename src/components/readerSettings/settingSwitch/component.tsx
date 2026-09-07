@@ -33,6 +33,20 @@ const readingRulerSliderConfigs = [
     defaultValue: 0.5,
   },
 ];
+
+const speedReadingSliderConfigs = [
+  {
+    maxValue: 900,
+    minValue: 100,
+    mode: "speedReadingSpeed",
+    minLabel: "100",
+    maxLabel: "900",
+    step: 50,
+    title: "Reading speed (WPM)",
+    isPDF: false,
+    defaultValue: 300,
+  },
+];
 class SettingSwitch extends React.Component<
   SettingSwitchProps,
   SettingSwitchState
@@ -70,6 +84,10 @@ class SettingSwitch extends React.Component<
         ConfigService.getReaderConfig("readingRulerLineHeight") || "3",
       readingRulerBackgroundOpacity:
         ConfigService.getReaderConfig("readingRulerBackgroundOpacity") || "0.3",
+      isSpeedReading: ConfigService.getReaderConfig("isSpeedReading") === "yes",
+      speedReadingSpeed:
+        ConfigService.getReaderConfig("speedReadingSpeed") || "300",
+      isMergeWord: ConfigService.getReaderConfig("isMergeWord") === "yes",
       isWordDefinition: ConfigService.getAllListConfig(
         "wordDefinitionBooks"
       ).includes(props.currentBook?.key),
@@ -132,6 +150,40 @@ class SettingSwitch extends React.Component<
     );
 
     toast(this.props.t("Change successful"));
+  };
+
+  exclusiveModeNames = [
+    "isParagraphMode",
+    "isReadingRuler",
+    "isSpeedReading",
+  ] as const;
+
+  handleExclusiveOff = (
+    enabledName: (typeof this.exclusiveModeNames)[number]
+  ) => {
+    const exclusiveHandlers: Record<
+      (typeof this.exclusiveModeNames)[number],
+      (value: boolean) => void
+    > = {
+      isParagraphMode: this.props.handleParagraphMode,
+      isReadingRuler: this.props.handleReadingRuler,
+      isSpeedReading: this.props.handleSpeedReading,
+    };
+    const offNames = this.exclusiveModeNames.filter(
+      (name) => name !== enabledName && this.state[name]
+    );
+    if (offNames.length === 0) return;
+    offNames.forEach((name) => {
+      ConfigService.setReaderConfig(name, "no");
+      exclusiveHandlers[name](false);
+    });
+    this.setState((prevState) => {
+      const nextState = { ...prevState };
+      offNames.forEach((name) => {
+        nextState[name] = false;
+      });
+      return nextState;
+    });
   };
   render() {
     return (
@@ -422,6 +474,9 @@ class SettingSwitch extends React.Component<
             className="single-control-switch"
             onClick={() => {
               const next = !this.state.isReadingRuler;
+              if (next) {
+                this.handleExclusiveOff("isReadingRuler");
+              }
               this.setState({ isReadingRuler: next });
               ConfigService.setReaderConfig(
                 "isReadingRuler",
@@ -470,6 +525,55 @@ class SettingSwitch extends React.Component<
           readingRulerSliderConfigs.map((item) => (
             <SliderList key={item.mode} {...{ item }} />
           ))}
+        <div className="single-control-switch-container" key="isSpeedReading">
+          <span className="single-control-switch-title">
+            <Trans>Enable speed reading</Trans>
+          </span>
+          <span
+            className="single-control-switch"
+            onClick={() => {
+              const next = !this.state.isSpeedReading;
+              if (next) {
+                this.handleExclusiveOff("isSpeedReading");
+              }
+              this.setState({ isSpeedReading: next });
+              ConfigService.setReaderConfig(
+                "isSpeedReading",
+                next ? "yes" : "no"
+              );
+              this.props.handleSpeedReading(next);
+              if (next) {
+                if (!ConfigService.getReaderConfig("speedReadingSpeed")) {
+                  ConfigService.setReaderConfig("speedReadingSpeed", "300");
+                }
+              }
+              toast(this.props.t("Change successful"));
+              setTimeout(async () => {
+                await this.props.renderBookFunc();
+              }, 500);
+            }}
+            style={this.state.isSpeedReading ? {} : { opacity: 0.6 }}
+          >
+            <span
+              className="single-control-button"
+              style={
+                !this.state.isSpeedReading
+                  ? {
+                      transform: "translateX(0px)",
+                      transition: "transform 0.5s ease",
+                    }
+                  : {
+                      transform: "translateX(20px)",
+                      transition: "transform 0.5s ease",
+                    }
+              }
+            ></span>
+          </span>
+        </div>
+        {this.state.isSpeedReading &&
+          speedReadingSliderConfigs.map((item) => (
+            <SliderList key={item.mode} {...{ item }} />
+          ))}
         {readerSettingList
           .filter((item) => {
             if (
@@ -513,11 +617,6 @@ class SettingSwitch extends React.Component<
                     this._handleChange(propName);
                   } else if (propName === "isShowPageBorder") {
                     this.props.handleShowBorder(!this.state.isShowPageBorder);
-                    if (!this.state.isShowPageBorder) {
-                      this.props.handleHideBackground(true);
-                      this.handleChange("isHideBackground");
-                    }
-
                     this.handleChange("isShowPageBorder");
                   } else if (propName === "isAllowScript") {
                     this.handleChange(propName);
@@ -525,11 +624,18 @@ class SettingSwitch extends React.Component<
                       BookUtil.reloadBooks(this.props.currentBook);
                     }, 500);
                   } else if (propName === "isParagraphMode") {
-                    this.props.handleParagraphMode(!this.state.isParagraphMode);
+                    const next = !this.state.isParagraphMode;
+                    if (next) {
+                      this.handleExclusiveOff("isParagraphMode");
+                    }
+                    this.props.handleParagraphMode(next);
                     this.handleChange(propName);
                     setTimeout(async () => {
                       await this.props.renderBookFunc();
                     }, 500);
+                  } else if (propName === "isMergeWord") {
+                    this.props.handleMergeWord(!this.state.isMergeWord);
+                    this._handleChange(propName);
                   } else if (propName in renderProps) {
                     renderProps[propName]!(!this.state[propName]);
                     this.handleChange(propName);
