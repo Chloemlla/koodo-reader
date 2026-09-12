@@ -323,7 +323,11 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     }
     if (name === "local") {
       let result = await backup(name);
-      if (result) {
+      if (result === "cancel") {
+        toast.dismiss("backup");
+        return;
+      }
+      if (result === "success") {
         toast.dismiss("backup");
         toast.success(this.props.t("Execute successful"));
         this.props.handleFetchBooks();
@@ -345,7 +349,12 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     });
     this.props.handleLoadingDialog(true);
     let result = await backup(name);
-    if (result) {
+    if (result === "cancel") {
+      this.props.handleLoadingDialog(false);
+      toast.dismiss("backup");
+      return;
+    }
+    if (result === "success") {
       this.props.handleLoadingDialog(false);
       toast.dismiss("backup");
       toast.success(this.props.t("Execute successful"));
@@ -363,7 +372,11 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     }
     if (name === "local") {
       let result = await restore(name);
-      if (result) {
+      if (result === "cancel") {
+        toast.dismiss("backup");
+        return;
+      }
+      if (result === "success") {
         toast.dismiss("backup");
         toast.success(this.props.t("Execute successful"));
         this.props.handleFetchBooks();
@@ -387,7 +400,12 @@ class SyncSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     toast.dismiss("backup");
     toast(this.props.t("Downloading, please wait"));
     let result = await restore(name);
-    if (result) {
+    if (result === "cancel") {
+      this.props.handleLoadingDialog(false);
+      toast.dismiss("backup");
+      return;
+    }
+    if (result === "success") {
       this.props.handleLoadingDialog(false);
       toast.dismiss("backup");
       toast.success(this.props.t("Execute successful"));
