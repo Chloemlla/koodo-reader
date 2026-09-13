@@ -29,6 +29,7 @@ import {
   exportHighlights,
   exportNotes,
 } from "../../../utils/file/export";
+import { importNotesData } from "../../../utils/file/importData";
 import DatabaseService from "../../../utils/storage/databaseService";
 import {
   dataSettingList,
@@ -45,6 +46,7 @@ class DataSetting extends React.Component<SettingInfoProps, SettingInfoState> {
       snapshotList: [],
       exportNotesFormat: "",
       exportHighlightsFormat: "",
+      exportWordsFormat: "",
       isEnableDiscordRPC:
         ConfigService.getReaderConfig("isEnableDiscordRPC") === "yes",
       isEnableKoReaderSync:
@@ -559,6 +561,23 @@ class DataSetting extends React.Component<SettingInfoProps, SettingInfoState> {
     }
     event.target.value = "";
   };
+  handleImportNotesData = async () => {
+    const result = await importNotesData();
+    if (result === "cancel" || result === "failed") {
+      return;
+    }
+    const { imported, skipped } = result as {
+      imported: number;
+      skipped: number;
+    };
+    toast.success(
+      this.props.t(
+        "Imported {{imported}} records, skipped {{skipped}} existing records",
+        { imported, skipped }
+      )
+    );
+    this.props.handleFetchBooks();
+  };
   render() {
     return (
       <>
@@ -721,6 +740,7 @@ class DataSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                 | "txt"
                 | "html"
                 | "pdf"
+                | "json"
                 | "";
               if (!fmt) return;
               this.setState({ exportNotesFormat: "" });
@@ -762,6 +782,9 @@ class DataSetting extends React.Component<SettingInfoProps, SettingInfoState> {
             <option value="pdf" className="lang-setting-option">
               PDF
             </option>
+            <option value="json" className="lang-setting-option">
+              JSON
+            </option>
           </select>
         </div>
         <div className="setting-dialog-new-title">
@@ -776,6 +799,7 @@ class DataSetting extends React.Component<SettingInfoProps, SettingInfoState> {
                 | "txt"
                 | "html"
                 | "pdf"
+                | "json"
                 | "";
               if (!fmt) return;
               this.setState({ exportHighlightsFormat: "" });
@@ -812,17 +836,24 @@ class DataSetting extends React.Component<SettingInfoProps, SettingInfoState> {
             <option value="pdf" className="lang-setting-option">
               PDF
             </option>
+            <option value="json" className="lang-setting-option">
+              JSON
+            </option>
           </select>
         </div>
         <div className="setting-dialog-new-title">
           <Trans>Export all dictionary history</Trans>
-          <span
-            className="change-location-button"
-            onClick={async () => {
+          <select
+            className="lang-setting-dropdown"
+            value={this.state.exportWordsFormat}
+            onChange={async (event) => {
+              const fmt = event.target.value as "csv" | "json" | "";
+              if (!fmt) return;
+              this.setState({ exportWordsFormat: "" });
               let dictHistory = await DatabaseService.getAllRecords("words");
               let books = await DatabaseService.getAllRecords("books");
               if (dictHistory.length > 0) {
-                const result = await exportDictionaryHistory(dictHistory, books);
+                const result = await exportDictionaryHistory(dictHistory, books, fmt);
                 if (result === "success") {
                   toast.success(this.props.t("Export successful"), { id: "exporting" });
                 } else if (result === "failed") {
@@ -833,9 +864,33 @@ class DataSetting extends React.Component<SettingInfoProps, SettingInfoState> {
               }
             }}
           >
-            <Trans>Export</Trans>
+            <option value="" className="lang-setting-option">
+              {this.props.t("Select format")}
+            </option>
+            <option value="csv" className="lang-setting-option">
+              CSV
+            </option>
+            <option value="json" className="lang-setting-option">
+              JSON
+            </option>
+          </select>
+        </div>
+        <div className="setting-dialog-new-title">
+          <Trans>Import notes, highlights and dictionary history</Trans>
+          <span
+            className="change-location-button"
+            onClick={this.handleImportNotesData}
+          >
+            <Trans>Select</Trans>
           </span>
         </div>
+        <p className="setting-option-subtitle">
+          <Trans>
+            {
+              "Select previously exported CSV or JSON files to import notes, highlights and dictionary history back to the library"
+            }
+          </Trans>
+        </p>
         <div className="setting-dialog-new-title">
           <Trans>Clear all data</Trans>
           <span

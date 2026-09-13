@@ -717,6 +717,9 @@ const createMainWin = () => {
     if (typeof filePath !== "string" || !filePath) {
       throw new TypeError("Invalid file path");
     }
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File not found: ${path.basename(filePath)}`);
+    }
     return new Promise((resolve, reject) => {
       const hash = nodeCrypto.createHash("md5");
       const stream = fs.createReadStream(filePath);
@@ -1182,6 +1185,21 @@ const createMainWin = () => {
     app.relaunch();
     app.exit();
     return "success";
+  });
+
+  ipcMain.handle("select-import-file", async (event) => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "Data Files", extensions: ["csv", "json"] }],
+    });
+    if (result.canceled || !Array.isArray(result.filePaths)) {
+      return [];
+    }
+    return result.filePaths.filter(
+      (filePath) =>
+        typeof filePath === "string" &&
+        ["csv", "json"].includes(filePath.split(".").pop().toLowerCase())
+    );
   });
 
   ipcMain.handle("select-zip-file", async (event, config) => {
