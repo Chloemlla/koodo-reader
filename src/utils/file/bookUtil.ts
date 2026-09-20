@@ -759,7 +759,6 @@ class BookUtil {
     }
   }
   static async searchBooksByKeyword(keyword: string) {
-    console.log("Searching books with keyword:", keyword);
     if (isElectron) {
       const ipcRenderer = window.electronAPI;
       return await ipcRenderer.invoke("custom-database-command", {
@@ -775,9 +774,9 @@ class BookUtil {
       const lowerKeyword = keyword.toLowerCase();
       for (let book of books) {
         if (
-          book.name.toLowerCase().includes(lowerKeyword) ||
-          book.author.toLowerCase().includes(lowerKeyword) ||
-          (book.key || "").toLowerCase().includes(lowerKeyword)
+          book.name?.toLowerCase().includes(lowerKeyword) ||
+          book.author?.toLowerCase().includes(lowerKeyword) ||
+          book.key?.toLowerCase().includes(lowerKeyword)
         ) {
           results.push(book);
         }
