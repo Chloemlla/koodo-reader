@@ -2209,11 +2209,15 @@ export const getZipBuffer = async (
   }
   return readArchiveBuffer("unzip-file", entryPath, filePath);
 };
-export const isReadingAidMode = () => {
+export const isReadingAidMode = (format: string, bookKey: string) => {
+  let isReadingRawPDF =
+    format === "PDF" &&
+    !ConfigService.getAllListConfig("convertPDFBooks").includes(bookKey);
   return (
-    ConfigService.getReaderConfig("isParagraphMode") === "yes" ||
-    ConfigService.getReaderConfig("isSpeedReading") === "yes" ||
-    ConfigService.getReaderConfig("isReadingRuler") === "yes"
+    (ConfigService.getReaderConfig("isParagraphMode") === "yes" ||
+      ConfigService.getReaderConfig("isSpeedReading") === "yes" ||
+      ConfigService.getReaderConfig("isReadingRuler") === "yes") &&
+    !isReadingRawPDF
   );
 };
 export const getOfficialDictLang = () => {
@@ -2247,6 +2251,12 @@ export const getOcrCachePath = (
     electron.fs.mkdirSync(ocrDir, { recursive: true });
   }
   return electron.path.join(ocrDir, bookKey + "_" + chapterDocIndex + ".json");
+};
+export const isReadingRawPDF = (book: Book) => {
+  return (
+    book.format === "PDF" &&
+    !ConfigService.getAllListConfig("convertPDFBooks").includes(book.key)
+  );
 };
 export const getOcrCache = (bookKey: string, chapterDocIndex: string) => {
   if (!isElectron || !window.electronAPI || !window.electronAPI.fs) {

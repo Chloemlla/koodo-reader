@@ -33,6 +33,7 @@ import {
   getZipBuffer,
   getZipEntries,
   isReadingAidMode,
+  isReadingRawPDF,
   saveOcrCache,
   throttle,
 } from "../../utils/common";
@@ -190,12 +191,8 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
       this.handleNoteClick
     );
     if (
-      this.props.currentBook.format === "PDF" &&
-      (this.props.readerMode === "double" ||
-        this.props.readerMode === "scroll") &&
-      !ConfigService.getAllListConfig("convertPDFBooks").includes(
-        this.props.currentBook.key
-      )
+      isReadingRawPDF(this.props.currentBook) &&
+      (this.props.readerMode === "double" || this.props.readerMode === "scroll")
     ) {
       let highlightersByChapter = highlighters.filter((item: Note) => {
         let cfi = JSON.parse(item.cfi);
@@ -456,12 +453,7 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
       rendition: rendition,
     });
     this.setState({ rendition });
-    if (
-      this.props.currentBook.format === "PDF" &&
-      !ConfigService.getAllListConfig("convertPDFBooks").includes(
-        this.props.currentBook.key
-      )
-    ) {
+    if (isReadingRawPDF(this.props.currentBook)) {
       //ignore
     } else {
       StyleUtil.addDefaultCss(this.props.currentBook.key);
@@ -550,12 +542,7 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
         chapter,
         chapterDocIndex,
       });
-      if (
-        this.props.currentBook.format === "PDF" &&
-        !ConfigService.getAllListConfig("convertPDFBooks").includes(
-          this.props.currentBook.key
-        )
-      ) {
+      if (isReadingRawPDF(this.props.currentBook)) {
         //ignore
       } else {
         StyleUtil.addDefaultCss(this.props.currentBook.key);
@@ -624,12 +611,7 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
         this.props.handleLeaveReader("bottom");
       });
       doc.addEventListener("pointerup", (event) => {
-        if (
-          this.props.currentBook.format === "PDF" &&
-          !ConfigService.getAllListConfig("convertPDFBooks").includes(
-            this.props.currentBook.key
-          )
-        ) {
+        if (isReadingRawPDF(this.props.currentBook)) {
           let ownerDoc = (event.target as HTMLElement).ownerDocument;
           let targetIframe = ownerDoc?.defaultView?.frameElement;
           let id = targetIframe?.getAttribute("id") || "";
@@ -654,12 +636,7 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
         this.setState({ rect });
       });
       doc.addEventListener("contextmenu", (event) => {
-        if (
-          this.props.currentBook.format === "PDF" &&
-          !ConfigService.getAllListConfig("convertPDFBooks").includes(
-            this.props.currentBook.key
-          )
-        ) {
+        if (isReadingRawPDF(this.props.currentBook)) {
           let ownerDoc = (event.target as HTMLElement).ownerDocument;
           let targetIframe = ownerDoc?.defaultView?.frameElement;
           let id = targetIframe?.getAttribute("id") || "";
@@ -687,11 +664,12 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
     }
   };
   render() {
+    let isReadingAid =
+      !isReadingRawPDF(this.props.currentBook) &&
+      (this.props.isParagraphMode || this.props.isSpeedReading);
     return (
       <>
-        {this.props.htmlBook &&
-        !this.props.isParagraphMode &&
-        !this.props.isSpeedReading ? (
+        {this.props.htmlBook && !isReadingAid ? (
           <PopupMenu
             {...({
               rendition: this.props.htmlBook.rendition,
@@ -737,7 +715,11 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
         )}
         <div
           className={
-            this.props.readerMode === "scroll" && !isReadingAidMode()
+            this.props.readerMode === "scroll" &&
+            !isReadingAidMode(
+              this.props.currentBook.format,
+              this.props.currentBook.key
+            )
               ? "html-viewer-page scrolling-html-viewer-page"
               : "html-viewer-page"
           }
@@ -763,9 +745,10 @@ class Viewer extends React.Component<ViewerProps, ViewerState> {
         {this.props.isHideBackground ||
         this.props.textOrientation === "vertical" ||
         this.props.isShowPageBorder ||
-        this.props.isParagraphMode ||
-        this.props.isReadingRuler ||
-        this.props.isSpeedReading ||
+        ((this.props.isParagraphMode ||
+          this.props.isReadingRuler ||
+          this.props.isSpeedReading) &&
+          !isReadingRawPDF(this.props.currentBook)) ||
         this.props.isMergeWord ? null : this.props.currentBook.key ? (
           <Background />
         ) : null}

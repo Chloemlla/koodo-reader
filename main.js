@@ -1771,6 +1771,7 @@ const createMainWin = () => {
     return new Promise((resolve) => {
       const doRemoveTab = () => {
         if (mainWin && mainView) {
+          mainWin.webContents.send("reading-finished", {});
           mainWin.contentView.removeChildView(mainView);
         }
         clearDiscordActivity();
@@ -1817,6 +1818,11 @@ const createMainWin = () => {
     if (readerWindow && !readerWindow.isDestroyed()) {
       readerWindow.setFullScreen(false);
       console.info("exit full");
+    }
+  });
+  ipcMain.handle("exit-reader", () => {
+    if (readerWindow && !readerWindow.isDestroyed()) {
+      readerWindow.close();
     }
   });
   ipcMain.handle("open-url", async (event, config) => {
