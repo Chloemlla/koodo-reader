@@ -8,7 +8,12 @@ import {
 import Parser from "html-react-parser";
 import DOMPurify from "dompurify";
 import { Trans } from "react-i18next";
-import { handleContextMenu } from "../../../utils/common";
+import axios from "axios";
+import {
+  handleContextMenu,
+  REPORT_REASONS,
+  vexSelectAsync,
+} from "../../../utils/common";
 import toast from "react-hot-toast";
 import { saveAs } from "file-saver";
 import { getAnswerStream } from "../../../utils/request/reader";
@@ -160,7 +165,10 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
           aiService: "official-ai-assistant-plugin",
           isAddNew: false,
         });
-        ConfigService.setReaderConfig("aiService", "official-ai-assistant-plugin");
+        ConfigService.setReaderConfig(
+          "aiService",
+          "official-ai-assistant-plugin"
+        );
       } else {
         this.setState({
           isAddNew: true,
@@ -258,7 +266,8 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
     try {
       if (
         ConfigService.getReaderConfig("aiService") &&
-        ConfigService.getReaderConfig("aiService") === "custom-ai-assistant-plugin"
+        ConfigService.getReaderConfig("aiService") ===
+          "custom-ai-assistant-plugin"
       ) {
         let plugin = this.props.plugins.find(
           (item) => item.key === "custom-ai-assistant-plugin"
@@ -336,7 +345,8 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
         }
       } else if (
         ConfigService.getReaderConfig("aiService") &&
-        ConfigService.getReaderConfig("aiService") !== "official-ai-assistant-plugin"
+        ConfigService.getReaderConfig("aiService") !==
+          "official-ai-assistant-plugin"
       ) {
       } else if (this.props.isAuthed) {
         let plugin = this.props.plugins.find(
@@ -412,10 +422,7 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
     }
   };
   handleChangeAiService = (aiService: string) => {
-    if (
-      aiService === "official-ai-assistant-plugin" &&
-      !this.props.isAuthed
-    ) {
+    if (aiService === "official-ai-assistant-plugin" && !this.props.isAuthed) {
       toast(this.props.t("Please upgrade to Pro to use this feature"));
       this.props.handleSetting(true);
       this.props.handleSettingMode("account");
@@ -442,6 +449,40 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
       toast.success(this.props.t("Copied"));
     });
   };
+  handleReportAnswer = async (content: string, index: number) => {
+    const history =
+      this.state.mode === "ask"
+        ? this.state.askHistory
+        : this.state.chatHistory;
+    const userMessage = history
+      .slice(0, index)
+      .reverse()
+      .find((item) => item.role === "user");
+    const reason = await vexSelectAsync(
+      "Report reason",
+      REPORT_REASONS.map((item) => ({ value: item, label: item }))
+    );
+    if (!reason) {
+      return;
+    }
+    toast.loading(this.props.t("Please wait"), { id: "report-feedback" });
+    try {
+      console.log("Reporting answer:", this.props.userInfo);
+      await axios.post("https://api.koodoreader.com/api/llm_report", {
+        answer: content,
+        question: userMessage?.content || "",
+        reason: this.props.t(reason),
+        user_id: (this.props.userInfo?.time_created || "") + "" || "anonymous",
+      });
+      toast.success(this.props.t("Thank you for your feedback"), {
+        id: "report-feedback",
+      });
+    } catch (error) {
+      toast.success(this.props.t("Thank you for your feedback"), {
+        id: "report-feedback",
+      });
+    }
+  };
   handleRenderHistoryMessage = (message: any[]) => {
     return message.map((item, index) => {
       return (
@@ -467,6 +508,14 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
               onClick={() => this.handleCopyAnswer(item.content)}
             >
               <span className="icon-copy-line"></span>
+            </div>
+          )}
+          {item.role === "assistant" && (
+            <div
+              className="popup-assist-copy-button popup-assist-report-button"
+              onClick={() => this.handleReportAnswer(item.content, index)}
+            >
+              <span className="icon-report" style={{ fontWeight: 500 }}></span>
             </div>
           )}
         </div>
