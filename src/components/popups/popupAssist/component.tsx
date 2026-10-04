@@ -8,7 +8,6 @@ import {
 import Parser from "html-react-parser";
 import DOMPurify from "dompurify";
 import { Trans } from "react-i18next";
-import axios from "axios";
 import {
   handleContextMenu,
   REPORT_REASONS,
@@ -17,7 +16,7 @@ import {
 import toast from "react-hot-toast";
 import { saveAs } from "file-saver";
 import { getAnswerStream } from "../../../utils/request/reader";
-import { chatStream } from "../../../utils/request/common";
+import { chatStream, llmReport } from "../../../utils/request/common";
 import { marked } from "marked";
 import { sampleQuestion } from "../../../constants/settingList";
 class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
@@ -467,7 +466,7 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
     }
     toast.loading(this.props.t("Please wait"), { id: "report-feedback" });
     try {
-      await axios.post("https://api.koodoreader.com/api/llm_report", {
+      await llmReport({
         answer: content,
         question: userMessage?.content || "",
         reason: this.props.t(reason),
@@ -647,8 +646,12 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
             style={{
               display: "flex",
               alignItems: "center",
-              justifyContent: "flex-start",
+              justifyContent: this.props.isDockedRight
+                ? "space-between"
+                : "flex-start",
               flexShrink: 0,
+              width: this.props.isDockedRight ? "100%" : undefined,
+              marginTop: this.props.isDockedRight ? "10px" : "0px",
             }}
           >
             <div
@@ -660,6 +663,7 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
               onClick={() => {
                 this.setState({ isAddNew: false, mode: "ask" });
               }}
+              style={{ width: this.props.isDockedRight ? "50%" : undefined }}
             >
               <span className={`icon-bookmark trans-icon`}></span>
               {this.props.t("Reading Assistant")}
@@ -673,6 +677,10 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
               onClick={() => {
                 this.setState({ isAddNew: false, mode: "chat" });
               }}
+              style={{
+                width: this.props.isDockedRight ? "50%" : undefined,
+                marginRight: this.props.isDockedRight ? "0px" : "10px",
+              }}
             >
               <span className={`icon-idea trans-icon`}></span>
               {this.props.t("Chat Assistant")}
@@ -684,34 +692,46 @@ class PopupAssist extends React.Component<PopupAssistProps, PopupAssistState> {
               display: "flex",
               alignItems: "center",
               gap: "8px",
+              width: this.props.isDockedRight ? "100%" : undefined,
+              justifyContent: this.props.isDockedRight
+                ? "space-between"
+                : undefined,
+              marginTop: this.props.isDockedRight ? "10px" : "0px",
             }}
           >
-            <div
-              className="popup-assist-export-button"
-              style={{ fontSize: 18 }}
-              onClick={this.handleDeleteChatHistory}
-            >
-              <span
-                data-tooltip-id="my-tooltip"
-                data-tooltip-content={this.props.t("Clear chat history")}
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <div
+                className="popup-assist-export-button"
+                style={{ fontSize: 18 }}
+                onClick={this.handleDeleteChatHistory}
               >
-                <span className="icon-trash-line"></span>
-              </span>
-            </div>
-            <div
-              className="popup-assist-export-button"
-              onClick={this.handleExportChatHistory}
-            >
-              <span
-                data-tooltip-id="my-tooltip"
-                data-tooltip-content={this.props.t("Export chat history")}
+                <span
+                  data-tooltip-id="my-tooltip"
+                  data-tooltip-content={this.props.t("Clear chat history")}
+                >
+                  <span className="icon-trash-line"></span>
+                </span>
+              </div>
+              <div
+                className="popup-assist-export-button"
+                onClick={this.handleExportChatHistory}
               >
-                <span className="icon-share"></span>
-              </span>
+                <span
+                  data-tooltip-id="my-tooltip"
+                  data-tooltip-content={this.props.t("Export chat history")}
+                >
+                  <span className="icon-share"></span>
+                </span>
+              </div>
             </div>
+
             <select
               className="dict-service-selector"
-              style={{ margin: 0, color: "#f16464" }}
+              style={{
+                margin: 0,
+                color: "#f16464",
+                width: "150px",
+              }}
               value={this.state.aiService}
               onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
                 if (event.target.value === "add-new") {
