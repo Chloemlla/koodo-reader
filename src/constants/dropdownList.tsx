@@ -297,16 +297,6 @@ export const sliderConfigs = [
     isPDF: false,
   },
   {
-    maxValue: 3,
-    minValue: 0.5,
-    mode: "scale",
-    minLabel: "0.5",
-    maxLabel: "3",
-    step: 0.1,
-    title: "Page width",
-    isPDF: true,
-  },
-  {
     maxValue: 1,
     minValue: 0.3,
     mode: "brightness",
@@ -316,6 +306,26 @@ export const sliderConfigs = [
     title: "Brightness",
     isPDF: true,
   },
+];
+export const pageWidthConfig = {
+  maxValue: 3,
+  minValue: 0.5,
+  mode: "scale",
+  minLabel: "50%",
+  maxLabel: "300%",
+  step: 0.1,
+  title: "Page width",
+  isPDF: true,
+};
+export const pageWidthPresetList = [
+  { label: "50%", value: "0.5" },
+  { label: "75%", value: "0.75" },
+  { label: "100%", value: "1" },
+  { label: "125%", value: "1.25" },
+  { label: "150%", value: "1.5" },
+  { label: "175%", value: "1.75" },
+  { label: "200%", value: "2" },
+  { label: "300%", value: "3" },
 ];
 export const speedList = {
   id: 3,

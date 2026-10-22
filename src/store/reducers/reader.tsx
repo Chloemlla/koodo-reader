@@ -24,10 +24,12 @@ const initState = {
   quoteText: "",
   htmlBook: null,
   scale: ConfigService.getReaderConfig("scale") || "1",
+  isFitPage: ConfigService.getReaderConfig("isFitPage") === "yes",
   margin: ConfigService.getReaderConfig("margin") || "0",
   section: null,
   readerMode: "double",
   isConvertOpen: false,
+  isScaleOpen: false,
   isPdfCropOpen: false,
   isSpeechOpen: false,
   isAnnotationOpen: false,
@@ -42,6 +44,7 @@ const initState = {
   isParagraphMode: ConfigService.getReaderConfig("isParagraphMode") === "yes",
   isReadingRuler: ConfigService.getReaderConfig("isReadingRuler") === "yes",
   isSpeedReading: ConfigService.getReaderConfig("isSpeedReading") === "yes",
+  isAutoReading: ConfigService.getReaderConfig("isAutoReading") === "yes",
   isMergeWord: ConfigService.getReaderConfig("isMergeWord") === "yes",
   isShowPageBorder: ConfigService.getReaderConfig("isShowPageBorder") === "yes",
   textOrientation: ConfigService.getReaderConfig("textOrientation") || "",
@@ -79,6 +82,11 @@ export function reader(
       return {
         ...state,
         isConvertOpen: action.payload,
+      };
+    case "HANDLE_SCALE_PAGE_DIALOG":
+      return {
+        ...state,
+        isScaleOpen: action.payload,
       };
     case "HANDLE_PDF_CROP_DIALOG":
       return {
@@ -170,6 +178,11 @@ export function reader(
         ...state,
         isSpeedReading: action.payload,
       };
+    case "HANDLE_AUTO_READING":
+      return {
+        ...state,
+        isAutoReading: action.payload,
+      };
     case "HANDLE_MERGE_WORD":
       return {
         ...state,
@@ -234,6 +247,11 @@ export function reader(
       return {
         ...state,
         scale: action.payload,
+      };
+    case "HANDLE_FIT_PAGE":
+      return {
+        ...state,
+        isFitPage: action.payload,
       };
     case "HANDLE_MARGIN":
       return {

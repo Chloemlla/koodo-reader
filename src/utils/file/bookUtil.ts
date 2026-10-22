@@ -560,6 +560,9 @@ class BookUtil {
   }
   static async isBookOffline(key: string) {
     let book: Book = await DatabaseService.getRecord(key, "books");
+    if (!book) {
+      return true;
+    }
     return await this.isBookExist(
       key,
       book.format.toLowerCase(),

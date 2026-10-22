@@ -2,7 +2,7 @@ import React from "react";
 import SettingPanel from "../../containers/panels/settingPanel";
 import NavigationPanel from "../../containers/panels/navigationPanel";
 import OperationPanel from "../../containers/panels/operationPanel";
-import { Toaster } from "react-hot-toast";
+import { Toaster, toast } from "react-hot-toast";
 import ProgressPanel from "../../containers/panels/progressPanel";
 import { ReaderProps, ReaderState } from "./interface";
 import {
@@ -15,6 +15,7 @@ import "./index.css";
 import Book from "../../models/Book";
 import DatabaseService from "../../utils/storage/databaseService";
 import ConvertDialog from "../../components/dialogs/convertDialog";
+import ScalePageDialog from "../../components/dialogs/scalePageDialog";
 import PdfCropDialog from "../../components/dialogs/pdfCropDialog";
 import { isElectron } from "react-device-detect";
 import SettingDialog from "../../components/dialogs/settingDialog";
@@ -27,7 +28,7 @@ import {
 } from "../../utils/reader/discordRPC";
 import SupportDialog from "../../components/dialogs/supportDialog";
 import { READING_PANEL_TOGGLE_EVENT } from "../../utils/reader/mouseEvent";
-import { isReadingRawPDF, throttle } from "../../utils/common";
+import { isPaginatedBook, isReadingRawPDF, throttle } from "../../utils/common";
 declare var window: any;
 let lock = false; //prevent from clicking too fasts
 let throttleTime = 200;
@@ -109,11 +110,9 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
       isOpenRightPanel: this.props.isSettingLocked,
       totalDuration: 0,
       currentDuration: 0,
-      scale: ConfigService.getReaderConfig("scale") || "1",
       isTouch: ConfigService.getReaderConfig("isTouch") === "yes",
       isPreventTrigger:
         ConfigService.getReaderConfig("isPreventTrigger") === "yes",
-      isShowScale: false,
       isNearEdge: false,
     };
   }
@@ -191,10 +190,9 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
       if (!book) return;
 
       this.props.handleFetchPercentage(book);
-      let readerMode =
-        isReadingRawPDF(book) || book.format.startsWith("CB")
-          ? ConfigService.getReaderConfig("pdfReaderMode") || "scroll"
-          : ConfigService.getReaderConfig("readerMode") || "double";
+      let readerMode = isPaginatedBook(book)
+        ? ConfigService.getReaderConfig("pdfReaderMode") || "scroll"
+        : ConfigService.getReaderConfig("readerMode") || "double";
       this.props.handleReaderMode(readerMode);
       this.props.handleReadingBook(book);
       // Start event-driven reading-time tracking
@@ -379,7 +377,15 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
           onClick={async () => {
             if (lock) return;
             lock = true;
-            await this.props.htmlBook.rendition.prev();
+            // RTL 下左侧箭头翻到下一页
+            if (
+              ConfigService.getReaderConfig("revertDirection") === "yes" &&
+              ConfigService.getReaderConfig("textOrientation") !== "vertical"
+            ) {
+              await this.props.htmlBook.rendition.next();
+            } else {
+              await this.props.htmlBook.rendition.prev();
+            }
             this.handleLocation();
             setTimeout(() => (lock = false), throttleTime);
           }}
@@ -415,7 +421,15 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
             onClick={async () => {
               if (lock) return;
               lock = true;
-              await this.props.htmlBook.rendition.next();
+              // RTL 下右侧箭头翻到上一页
+              if (
+                ConfigService.getReaderConfig("revertDirection") === "yes" &&
+                ConfigService.getReaderConfig("textOrientation") !== "vertical"
+              ) {
+                await this.props.htmlBook.rendition.prev();
+              } else {
+                await this.props.htmlBook.rendition.next();
+              }
               this.handleLocation();
               setTimeout(() => (lock = false), throttleTime);
             }}
@@ -489,9 +503,9 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
         <div
           style={{
             position: "absolute",
-            top: "0px",
+            top: "10px",
             right:
-              this.props.isSettingLocked || this.props.isDockedRight ? 300 : 5,
+              this.props.isSettingLocked || this.props.isDockedRight ? 300 : 15,
             zIndex: 10,
             width: "120px",
             display: "flex",
@@ -515,90 +529,16 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
                 justifyContent: "flex-end",
               }}
             >
-              {this.state.isShowScale && (
-                <div className="scale-container">
-                  <div
-                    style={{
-                      zIndex: 100,
-                      width: "100px",
-                    }}
-                  >
-                    <input
-                      className="input-value"
-                      defaultValue={
-                        ConfigService.getReaderConfig("scale")
-                          ? parseFloat(ConfigService.getReaderConfig("scale")) *
-                            100
-                          : 100
-                      }
-                      value={
-                        this.state.scale === " "
-                          ? this.state.scale
-                          : Math.round(parseFloat(this.state.scale) * 100)
-                      }
-                      type="number"
-                      onInput={(event: any) => {
-                        let fieldVal = event.target.value;
-                        ConfigService.setReaderConfig(
-                          "scale",
-                          parseFloat(fieldVal) / 100 + ""
-                        );
-                      }}
-                      onFocus={() => {
-                        this.setState({ scale: " " });
-                      }}
-                      onChange={(event) => {
-                        let fieldVal = event.target.value;
-                        this.setState({
-                          scale: parseFloat(fieldVal) / 100 + "",
-                        });
-                      }}
-                      onBlur={(event) => {
-                        let fieldVal = event.target.value;
-                        if (fieldVal.trim() !== "") {
-                          ConfigService.setReaderConfig(
-                            "scale",
-                            parseFloat(fieldVal) / 100 + ""
-                          );
-                        }
-                        this.props.renderBookFunc();
-                      }}
-                    />
-                    <span> %</span>
-                  </div>
-
-                  <input
-                    className="input-progress"
-                    value={this.state.scale}
-                    type="range"
-                    max={4}
-                    min={0.5}
-                    step={0.01}
-                    onInput={(event: any) => {
-                      const scale = event.target.value;
-                      ConfigService.setReaderConfig("scale", scale);
-                    }}
-                    onChange={(event) => {
-                      this.setState({ scale: event.target.value });
-                    }}
-                    onMouseUp={() => {
-                      this.props.handleScale(this.state.scale);
-                      this.props.renderBookFunc();
-                    }}
-                    style={{
-                      zIndex: 100,
-                      width: "120px",
-                    }}
-                  />
-                </div>
-              )}
               <div
-                className="reader-zoom-in-icon-container"
+                className="reader-setting-icon-container"
                 onClick={() => {
-                  this.setState({ isShowScale: !this.state.isShowScale });
+                  this.props.handleScalePageDialog(!this.props.isScaleOpen);
                 }}
               >
-                <span className="icon-zoom-in reader-setting-icon"></span>
+                <span
+                  className="icon-zoom-in reader-setting-icon"
+                  style={{ fontSize: 23 }}
+                ></span>
               </div>
             </div>
           )}
@@ -632,7 +572,8 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
             </div>
           )}
           <div
-            className="reader-setting-icon-container"
+            className="next-chapter-single-container"
+            style={{ transform: "rotate(0deg)", marginLeft: "8px" }}
             onClick={() => {
               this.handleEnterReader("left");
               this.handleEnterReader("right");
@@ -640,10 +581,7 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
               this.handleEnterReader("top");
             }}
           >
-            <span
-              className="icon-grid reader-setting-icon"
-              style={{ opacity: 1 }}
-            ></span>
+            <span className="icon-grid next-chapter-single"></span>
           </div>
         </div>
         {this.props.isSettingOpen && (
@@ -871,6 +809,9 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
         </div>
 
         {this.props.currentBook.key && <Viewer {...(renditionProps as any)} />}
+        {(this.props.readerMode === "scroll" ||
+          this.props.readerMode === "single") &&
+          this.props.isScaleOpen && <ScalePageDialog />}
         {this.props.isConvertOpen && <ConvertDialog />}
         {this.props.isPdfCropOpen && <PdfCropDialog />}
         <SupportDialog />
