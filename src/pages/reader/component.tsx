@@ -17,6 +17,8 @@ import DatabaseService from "../../utils/storage/databaseService";
 import ConvertDialog from "../../components/dialogs/convertDialog";
 import ScalePageDialog from "../../components/dialogs/scalePageDialog";
 import PdfCropDialog from "../../components/dialogs/pdfCropDialog";
+import StudyLangDialog from "../../components/dialogs/studyLangDialog";
+import AssistReadDialog from "../../components/dialogs/assistReadDialog";
 import { isElectron } from "react-device-detect";
 import SettingDialog from "../../components/dialogs/settingDialog";
 import SpeechDialog from "../../components/dialogs/speechDialog";
@@ -27,6 +29,7 @@ import {
   clearDiscordPresence,
 } from "../../utils/reader/discordRPC";
 import SupportDialog from "../../components/dialogs/supportDialog";
+import WindowControls from "../../components/windowControls";
 import { READING_PANEL_TOGGLE_EVENT } from "../../utils/reader/mouseEvent";
 import { isPaginatedBook, isReadingRawPDF, throttle } from "../../utils/common";
 declare var window: any;
@@ -71,6 +74,8 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
   messageTimer!: NodeJS.Timeout;
   tickTimer!: NodeJS.Timeout;
   private autoShowTimer: NodeJS.Timeout | null = null;
+  private hideQuickButtonsTimer: NodeJS.Timeout | null = null;
+  private dialogAnchorIcon: HTMLElement | null = null;
   private readingTimeUtil = new ReadingTimeUtil(
     ConfigService,
     isElectron
@@ -151,6 +156,7 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
       READING_PANEL_TOGGLE_EVENT,
       this.handleReadingPanelToggle
     );
+    window.addEventListener("resize", this.updateSettingDialogPosition);
 
     // 进入阅读器后主动展示快捷按钮 3 秒，提示用户位置后自动隐藏
     this.setState({ isNearEdge: true });
@@ -158,6 +164,11 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
       this.autoShowTimer = null;
       this.setState({ isNearEdge: false });
     }, 1500);
+  }
+  componentDidUpdate() {
+    if (document.querySelector(".reader-setting-dialog-anchor")) {
+      this.updateSettingDialogPosition();
+    }
   }
   async UNSAFE_componentWillMount() {
     let url = document.location.href;
@@ -211,6 +222,11 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
       READING_PANEL_TOGGLE_EVENT,
       this.handleReadingPanelToggle
     );
+    window.removeEventListener("resize", this.updateSettingDialogPosition);
+    if (this.hideQuickButtonsTimer) {
+      clearTimeout(this.hideQuickButtonsTimer);
+      this.hideQuickButtonsTimer = null;
+    }
     if (isElectron) {
       clearDiscordPresence();
     }
@@ -349,6 +365,85 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
       this.handleEnterReader(position);
     }
   };
+  closeSettingDialogs = () => {
+    this.props.handleScalePageDialog(false);
+    this.props.handleConvertDialog(false);
+    this.props.handlePdfCropDialog(false);
+    this.props.handleStudyLangDialog(false);
+    this.props.handleAssistReadDialog(false);
+  };
+  updateSettingDialogPosition = () => {
+    const anchor = document.querySelector<HTMLElement>(
+      ".reader-setting-dialog-anchor"
+    );
+    const dialog = anchor?.querySelector<HTMLElement>(".sort-dialog-container");
+    if (!anchor || !dialog) return;
+    const icon = this.dialogAnchorIcon;
+    if (!icon || !icon.isConnected) return;
+    const iconRect = icon.getBoundingClientRect();
+    const iconCenter = iconRect.left + iconRect.width / 2;
+    const viewportWidth =
+      document.documentElement.clientWidth || window.innerWidth;
+    const reservedRight =
+      this.props.isSettingLocked || this.props.isDockedRight ? 300 : 0;
+    const dialogWidth = dialog.offsetWidth;
+    if (!dialogWidth) return;
+    const minLeft = 8;
+    const maxLeft = Math.max(
+      minLeft,
+      viewportWidth - reservedRight - dialogWidth - 8
+    );
+    const left = Math.min(
+      maxLeft,
+      Math.max(minLeft, iconCenter - dialogWidth / 2)
+    );
+    document.documentElement.style.setProperty(
+      "--reader-dialog-anchor-x",
+      `${iconCenter}px`
+    );
+    anchor.style.left = `${left}px`;
+  };
+  handleDialogButtonHover = (
+    handleDialog: (isOpen: boolean) => void,
+    dialogSelector: string
+  ) => ({
+    onMouseEnter: (event: React.MouseEvent<HTMLDivElement>) => {
+      this.dialogAnchorIcon = event.currentTarget;
+      this.closeSettingDialogs();
+      handleDialog(true);
+      this.updateSettingDialogPosition();
+      window.requestAnimationFrame(this.updateSettingDialogPosition);
+    },
+    onMouseLeave: () => {
+      window.setTimeout(() => {
+        if (!document.querySelector(`${dialogSelector}:hover`)) {
+          handleDialog(false);
+        }
+      }, 200);
+    },
+  });
+  showQuickButtons = () => {
+    if (this.autoShowTimer) {
+      clearTimeout(this.autoShowTimer);
+      this.autoShowTimer = null;
+    }
+    if (this.hideQuickButtonsTimer) {
+      clearTimeout(this.hideQuickButtonsTimer);
+      this.hideQuickButtonsTimer = null;
+    }
+    if (!this.state.isNearEdge) {
+      this.setState({ isNearEdge: true });
+    }
+  };
+  hideQuickButtons = () => {
+    if (this.hideQuickButtonsTimer) {
+      clearTimeout(this.hideQuickButtonsTimer);
+    }
+    this.hideQuickButtonsTimer = setTimeout(() => {
+      this.hideQuickButtonsTimer = null;
+      this.setState({ isNearEdge: false });
+    }, 200);
+  };
   handleLocation = () => {
     let position = this.props.htmlBook.rendition.getPosition();
 
@@ -359,6 +454,13 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
     );
   };
   render() {
+    const isSeparateElectronWindow =
+      isElectron && ConfigService.getReaderConfig("isOpenInMain") !== "yes";
+    const isMacOS =
+      isElectron && window.electronAPI?.runtime?.platform === "darwin";
+    const isMergeWord = ConfigService.getReaderConfig("isMergeWord") === "yes";
+    const showCustomWindowControls =
+      isSeparateElectronWindow && (!isMacOS || isMergeWord);
     const renditionProps = {
       handleLeaveReader: this.handleLeaveReader,
       handleEnterReader: this.handleEnterReader,
@@ -371,9 +473,14 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
     return (
       <div className="viewer">
         <Tooltip id="my-tooltip" style={{ zIndex: 25 }} />
+        {isSeparateElectronWindow && (
+          <div className="reader-window-drag-region" />
+        )}
 
         <div
-          className="previous-chapter-single-container"
+          className="previous-chapter-single-container reader-quick-buttons"
+          onMouseEnter={this.showQuickButtons}
+          onMouseLeave={this.hideQuickButtons}
           onClick={async () => {
             if (lock) return;
             lock = true;
@@ -394,12 +501,13 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
             opacity: this.state.isNearEdge ? undefined : 0,
             transition: "opacity 0.3s ease",
           }}
-          onMouseEnter={() => this.setState({ isNearEdge: true })}
-          onMouseLeave={() => this.setState({ isNearEdge: false })}
         >
           <span className="icon-dropdown previous-chapter-single"></span>
         </div>
         <div
+          className="reader-quick-buttons"
+          onMouseEnter={this.showQuickButtons}
+          onMouseLeave={this.hideQuickButtons}
           style={{
             position: "absolute",
             bottom: 10,
@@ -413,8 +521,6 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
             opacity: this.state.isNearEdge ? 1 : 0,
             transition: "opacity 0.3s ease",
           }}
-          onMouseEnter={() => this.setState({ isNearEdge: true })}
-          onMouseLeave={() => this.setState({ isNearEdge: false })}
         >
           <div
             className="next-chapter-single-container"
@@ -501,15 +607,29 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
         </div>
 
         <div
+          className="reader-quick-buttons"
+          onMouseEnter={this.showQuickButtons}
+          onMouseLeave={this.hideQuickButtons}
           style={{
             position: "absolute",
-            top: "10px",
-            right:
-              this.props.isSettingLocked || this.props.isDockedRight ? 300 : 15,
-            zIndex: 10,
-            width: "120px",
+            top: "0px",
+            ...(isSeparateElectronWindow && isMacOS
+              ? {
+                  left: this.props.isNavLocked ? 315 : isMergeWord ? 15 : 82,
+                  right: "auto",
+                }
+              : {
+                  right:
+                    this.props.isSettingLocked || this.props.isDockedRight
+                      ? 300
+                      : 15,
+                }),
+            zIndex: 16,
+            width: "max-content",
             display: "flex",
-            alignItems: "center",
+            flexDirection: "column",
+            alignItems:
+              isSeparateElectronWindow && isMacOS ? "flex-start" : "flex-end",
             justifyContent: "flex-end",
             opacity: this.state.isNearEdge ? 1 : 0,
             transition: "opacity 0.3s ease",
@@ -517,71 +637,115 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
               ? ConfigService.getReaderConfig("textColor")
               : "",
           }}
-          onMouseEnter={() => this.setState({ isNearEdge: true })}
-          onMouseLeave={() => this.setState({ isNearEdge: false })}
         >
-          {(this.props.readerMode === "scroll" ||
-            this.props.readerMode === "single") && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "flex-end",
-              }}
-            >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "flex-end",
+            }}
+          >
+            {this.props.currentBook &&
+              !isReadingRawPDF(this.props.currentBook) && (
+                <>
+                  <div
+                    className="reader-setting-icon-container"
+                    {...this.handleDialogButtonHover(
+                      this.props.handleStudyLangDialog,
+                      ".study-lang-dialog-container"
+                    )}
+                  >
+                    <span
+                      className="icon-trans reader-setting-icon"
+                      style={{ fontSize: 23 }}
+                    ></span>
+                  </div>
+                  <div
+                    className="reader-setting-icon-container"
+                    {...this.handleDialogButtonHover(
+                      this.props.handleAssistReadDialog,
+                      ".assist-read-dialog-container"
+                    )}
+                  >
+                    <span
+                      className="icon-pencil-ruler reader-setting-icon"
+                      style={{ fontSize: 21 }}
+                    ></span>
+                  </div>
+                </>
+              )}
+            {(this.props.readerMode === "scroll" ||
+              this.props.readerMode === "single") && (
               <div
-                className="reader-setting-icon-container"
-                onClick={() => {
-                  this.props.handleScalePageDialog(!this.props.isScaleOpen);
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "flex-end",
                 }}
               >
-                <span
-                  className="icon-zoom-in reader-setting-icon"
-                  style={{ fontSize: 23 }}
-                ></span>
-              </div>
-            </div>
-          )}
-
-          {this.props.currentBook.format === "PDF" &&
-            this.props.readerMode === "scroll" && (
-              <div
-                className="reader-setting-icon-container"
-                onClick={() => {
-                  this.props.handlePdfCropDialog(!this.props.isPdfCropOpen);
-                }}
-              >
-                <span
-                  className="icon-crop reader-setting-icon"
-                  style={{ fontSize: 24 }}
-                ></span>
+                <div
+                  className="reader-setting-icon-container"
+                  {...this.handleDialogButtonHover(
+                    this.props.handleScalePageDialog,
+                    ".scale-page-dialog-container"
+                  )}
+                >
+                  <span
+                    className="icon-zoom-in reader-setting-icon"
+                    style={{ fontSize: 23 }}
+                  ></span>
+                </div>
               </div>
             )}
 
-          {this.props.currentBook.format === "PDF" && (
+            {this.props.currentBook.format === "PDF" &&
+              this.props.readerMode === "scroll" && (
+                <div
+                  className="reader-setting-icon-container"
+                  {...this.handleDialogButtonHover(
+                    this.props.handlePdfCropDialog,
+                    ".pdf-crop-dialog-container"
+                  )}
+                >
+                  <span
+                    className="icon-crop reader-setting-icon"
+                    style={{ fontSize: 24 }}
+                  ></span>
+                </div>
+              )}
+
+            {this.props.currentBook.format === "PDF" && (
+              <div
+                className="reader-setting-icon-container"
+                {...this.handleDialogButtonHover(
+                  this.props.handleConvertDialog,
+                  ".convert-dialog-container"
+                )}
+              >
+                <span
+                  className="icon-convert-text reader-setting-icon"
+                  style={{ fontSize: 26 }}
+                ></span>
+              </div>
+            )}
             <div
               className="reader-setting-icon-container"
+              aria-label={this.props.t("Toggle menu")}
+              data-tooltip-id="my-tooltip"
+              data-tooltip-content={this.props.t("Toggle menu")}
               onClick={() => {
-                this.props.handleConvertDialog(!this.props.isConvertOpen);
+                this.handleEnterReader("left");
+                this.handleEnterReader("right");
+                this.handleEnterReader("bottom");
+                this.handleEnterReader("top");
               }}
             >
               <span
-                className="icon-convert-text reader-setting-icon"
-                style={{ fontSize: 26 }}
+                className="icon-grid reader-setting-icon"
+                style={{ fontSize: 20 }}
               ></span>
             </div>
-          )}
-          <div
-            className="next-chapter-single-container"
-            style={{ transform: "rotate(0deg)", marginLeft: "8px" }}
-            onClick={() => {
-              this.handleEnterReader("left");
-              this.handleEnterReader("right");
-              this.handleEnterReader("bottom");
-              this.handleEnterReader("top");
-            }}
-          >
-            <span className="icon-grid next-chapter-single"></span>
+            {showCustomWindowControls && <WindowControls t={this.props.t} />}
           </div>
         </div>
         {this.props.isSettingOpen && (
@@ -809,11 +973,23 @@ class Reader extends React.Component<ReaderProps, ReaderState> {
         </div>
 
         {this.props.currentBook.key && <Viewer {...(renditionProps as any)} />}
-        {(this.props.readerMode === "scroll" ||
+        {((this.props.readerMode === "scroll" ||
           this.props.readerMode === "single") &&
-          this.props.isScaleOpen && <ScalePageDialog />}
-        {this.props.isConvertOpen && <ConvertDialog />}
-        {this.props.isPdfCropOpen && <PdfCropDialog />}
+          this.props.isScaleOpen) ||
+        this.props.isConvertOpen ||
+        this.props.isPdfCropOpen ||
+        this.props.isStudyLangOpen ||
+        this.props.isAssistReadOpen ? (
+          <div className="reader-setting-dialog-anchor">
+            {(this.props.readerMode === "scroll" ||
+              this.props.readerMode === "single") &&
+              this.props.isScaleOpen && <ScalePageDialog />}
+            {this.props.isConvertOpen && <ConvertDialog />}
+            {this.props.isPdfCropOpen && <PdfCropDialog />}
+            {this.props.isStudyLangOpen && <StudyLangDialog />}
+            {this.props.isAssistReadOpen && <AssistReadDialog />}
+          </div>
+        ) : null}
         <SupportDialog />
         {this.props.isOpenPopupOptionDialog && (
           <>
